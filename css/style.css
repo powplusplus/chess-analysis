@@ -189,20 +189,6 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
 }
 .game-date{color:var(--txt-faint);font-size:12.5px;white-space:nowrap}
 .games-empty{color:var(--txt-dim);padding:24px;text-align:center}
-.games-note{
-  display:flex;align-items:flex-start;gap:10px;
-  color:var(--txt-dim);font-size:13px;line-height:1.5;
-  background:var(--panel-2,rgba(255,255,255,.03));
-  border:1px solid var(--line,rgba(255,255,255,.08));
-  border-radius:10px;padding:12px 14px;margin:0 2px 14px;
-}
-.games-note strong{color:var(--txt);font-weight:800}
-.games-note-ico{
-  flex:none;width:18px;height:18px;border-radius:50%;
-  display:grid;place-items:center;margin-top:1px;
-  font-size:11px;font-weight:800;font-style:italic;
-  color:var(--txt-dim);background:rgba(255,255,255,.07);
-}
 
 /* ---- ongoing / live games ---- */
 .games-section{
