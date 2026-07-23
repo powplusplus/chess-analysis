@@ -117,39 +117,63 @@
         </div>
 
         <div class="graph-wrap">
-          <canvas id="graph" height="72"></canvas>
+          <canvas id="graph" height="88"></canvas>
         </div>
 
-        <div class="report" id="report" hidden>
-          <div class="row row-players">
-            <span class="cell-w" id="rep-white-name">White</span>
-            <span class="cell-mid"></span>
-            <span class="cell-b" id="rep-black-name">Black</span>
-          </div>
-
-          <div class="row row-acc">
-            <span class="acc acc-w" id="acc-white">—</span>
-            <span class="cell-mid">Accuracy</span>
-            <span class="acc acc-b" id="acc-black">—</span>
-          </div>
-
-          <div class="tallies" id="tallies"></div>
-          <button class="tally-more" id="tally-more" type="button" hidden>Show more</button>
-
-          <div class="row row-rating">
-            <span class="rating rating-w" id="rating-white">—</span>
-            <span class="cell-mid">Game Rating</span>
-            <span class="rating rating-b" id="rating-black">—</span>
-          </div>
-
-          <div class="opening" id="opening"></div>
+        <div class="side-tabs" role="tablist" aria-label="Review panels">
+          <button class="side-tab active" id="tab-overview" type="button" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Overview</button>
+          <button class="side-tab" id="tab-moves" type="button" role="tab" aria-selected="false" aria-controls="panel-moves" data-tab="moves">Moves</button>
         </div>
 
-        <div class="movelist-wrap">
-          <div class="movelist" id="movelist"></div>
-        </div>
+        <div class="side-body">
+          <div class="side-panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+            <div class="report" id="report" hidden>
+              <div class="row row-players">
+                <span class="cell-w" id="rep-white-name">White</span>
+                <span class="cell-mid"></span>
+                <span class="cell-b" id="rep-black-name">Black</span>
+              </div>
 
-        <div class="move-detail" id="move-detail"></div>
+              <div class="row row-acc">
+                <span class="acc acc-w" id="acc-white">—</span>
+                <span class="cell-mid">Accuracy</span>
+                <span class="acc acc-b" id="acc-black">—</span>
+              </div>
+
+              <div class="tallies" id="tallies"></div>
+              <button class="tally-more" id="tally-more" type="button" hidden>Show more</button>
+
+              <div class="row row-rating">
+                <span class="rating rating-w" id="rating-white">—</span>
+                <span class="cell-mid">Game Rating</span>
+                <span class="rating rating-b" id="rating-black">—</span>
+              </div>
+
+              <div class="opening" id="opening"></div>
+            </div>
+            <p class="report-placeholder" id="report-placeholder">Accuracy + move quality appear when analysis finishes.</p>
+
+            <section class="coach" id="coach" aria-label="Coach Overview">
+              <div class="coach-head">
+                <img class="coach-avatar" src="assets/magnus.png" width="48" height="48" alt="Coach">
+                <div class="coach-titles">
+                  <h3 class="coach-title">Coach Overview</h3>
+                  <p class="coach-sub" id="coach-sub">Game overview</p>
+                </div>
+              </div>
+              <div class="coach-body" id="coach-body">
+                <p class="coach-placeholder">Load a game to get coaching.</p>
+              </div>
+            </section>
+          </div>
+
+          <div class="side-panel" id="panel-moves" role="tabpanel" aria-labelledby="tab-moves" hidden>
+            <div class="movelist-wrap">
+              <div class="movelist" id="movelist"></div>
+            </div>
+            <div class="move-detail" id="move-detail"></div>
+          </div>
+        </div>
       </aside>
     </main>
 

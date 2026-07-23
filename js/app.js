@@ -4,6 +4,10 @@ import { icon, colorOf, labelOf } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
 import { fetchRecentGames, summarise } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
+import {
+  askCoach, buildGameOverviewPrompt, buildMovePrompt,
+  summariseTallies, criticalMoments, moveLine, fmtCpShort,
+} from './coach.js';
 
 const $ = id => document.getElementById(id);
 const FILES = 'abcdefgh';
@@ -24,6 +28,10 @@ const state = {
   tallyCursor: {},  // key -> move index last jumped to
   animating: false,
   analysisToken: 0,
+  coachAbort: null,
+  coachTimer: null,
+  coachCache: new Map(),
+  coachReqId: 0,
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -127,10 +135,14 @@ function startReview(pgn, meta) {
   state.flipped = meta ? !meta.meIsWhite : false;
   state.talliesExpanded = false;
   state.tallyCursor = {};
+  state.coachCache = new Map();
+  if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
+  if (state.coachTimer) { clearTimeout(state.coachTimer); state.coachTimer = null; }
 
   show('review');
   buildBoard();
   renderAll();
+  setCoachPlaceholder('Engine analysing… coach waits for the full report.');
   runAnalysis();
 }
 
@@ -400,6 +412,7 @@ function jumpToClass(cls, color) {
     next = idxs[(idxs.indexOf(cur) + 1) % idxs.length];
   }
   state.tallyCursor[key] = next;
+  setSideTab('moves');
   goto(next + 1, { animate: false });
 
   document.querySelectorAll('.tally.active').forEach(el => el.classList.remove('active'));
@@ -491,7 +504,7 @@ function renderReport() {
 function renderGraph() {
   const cv = $('graph');
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || 360, h = 72;
+  const w = cv.clientWidth || 400, h = 88;
   cv.width = w * dpr; cv.height = h * dpr;
   const g = cv.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -564,6 +577,7 @@ function renderGraph() {
 $('graph').addEventListener('click', e => {
   const r = e.currentTarget.getBoundingClientRect();
   const frac = (e.clientX - r.left) / r.width;
+  setSideTab('moves');
   goto(Math.round(frac * state.moves.length));
 });
 
@@ -589,6 +603,171 @@ async function goto(ply, opts = {}) {
 function renderAll() {
   renderBoard(); renderPlayers(); renderEvalBar();
   renderMoves(); renderDetail(); renderReport(); renderGraph();
+  scheduleCoach();
+}
+
+/* ─────────────────── coach overview ─────────────────── */
+function setCoachPlaceholder(msg, isErr = false) {
+  const body = $('coach-body');
+  body.classList.toggle('thinking', !isErr);
+  body.innerHTML = `<p class="${isErr ? 'coach-err' : 'coach-placeholder'}">${esc(msg)}</p>`;
+}
+
+function setCoachText(text) {
+  const body = $('coach-body');
+  body.classList.remove('thinking');
+  const paras = String(text).trim().split(/\n+/).map(s => s.trim()).filter(Boolean);
+  body.innerHTML = paras.length
+    ? paras.map(p => `<p>${esc(p)}</p>`).join('')
+    : '<p class="coach-placeholder">No note from coach.</p>';
+}
+
+function coachSubtitle() {
+  if (state.ply === 0) return 'Game overview';
+  const mv = state.moves[state.ply - 1];
+  const num = Math.floor((state.ply - 1) / 2) + 1;
+  const dots = (state.ply - 1) % 2 === 0 ? '' : '...';
+  return `Move ${num}${dots ? '…' : '.'} ${mv.san}`;
+}
+
+function meSide() {
+  if (!state.meta || state.meta.meIsWhite == null) return null;
+  return state.meta.meIsWhite ? 'w' : 'b';
+}
+
+function analysisReady() {
+  return !state.running && state.reports.length && state.reports.every(Boolean);
+}
+
+function scheduleCoach() {
+  $('coach-sub').textContent = coachSubtitle();
+  if (!state.moves.length) {
+    setCoachPlaceholder('Load a game to get coaching.');
+    return;
+  }
+  if (!analysisReady()) {
+    setCoachPlaceholder(state.running
+      ? 'Engine analysing… coach waits for the full report.'
+      : 'Finish analysis first, then coach can talk.');
+    return;
+  }
+
+  const cacheKey = state.analysisToken + ':' + state.ply;
+  if (state.coachCache.has(cacheKey)) {
+    setCoachText(state.coachCache.get(cacheKey));
+    return;
+  }
+
+  if (state.coachTimer) clearTimeout(state.coachTimer);
+  setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
+  state.coachTimer = setTimeout(() => refreshCoach(cacheKey), 450);
+}
+
+async function refreshCoach(cacheKey) {
+  if (!analysisReady()) return;
+  if (state.coachAbort) state.coachAbort.abort();
+  const ac = new AbortController();
+  state.coachAbort = ac;
+  const reqId = ++state.coachReqId;
+
+  let prompt;
+  try {
+    prompt = state.ply === 0 ? makeOverviewPrompt() : makeMovePrompt();
+  } catch (ex) {
+    setCoachPlaceholder(ex.message || 'Could not build coach prompt.', true);
+    return;
+  }
+
+  try {
+    const text = await askCoach(prompt, ac.signal);
+    if (reqId !== state.coachReqId) return;
+    const cleaned = scrubCoachText(text);
+    state.coachCache.set(cacheKey, cleaned);
+    setCoachText(cleaned);
+  } catch (ex) {
+    if (ex.name === 'AbortError') return;
+    if (reqId !== state.coachReqId) return;
+    setCoachPlaceholder(ex.message || 'Coach request failed.', true);
+  }
+}
+
+function scrubCoachText(text) {
+  return String(text)
+    .replace(/\u2014|\u2013/g, ',')  // em/en dash → comma
+    .replace(/\s+,/g, ',')
+    .replace(/,\s*,/g, ',')
+    .trim();
+}
+
+function makeOverviewPrompt() {
+  const accs = { w: [], b: [] };
+  state.reports.forEach((r, i) => {
+    if (!r) return;
+    accs[state.moves[i].color].push(r.accuracy);
+  });
+  const aw = gameAccuracy(accs.w), ab = gameAccuracy(accs.b);
+  const result = state.meta.result
+    || (state.meta.meIsWhite == null ? 'see PGN' : state.meta.result);
+
+  return buildGameOverviewPrompt({
+    white: state.meta.white.name,
+    black: state.meta.black.name,
+    result: result || 'unknown',
+    opening: state.meta.opening,
+    eco: state.meta.eco,
+    accW: aw == null ? null : aw.toFixed(1),
+    accB: ab == null ? null : ab.toFixed(1),
+    ratingW: estimateRating(aw),
+    ratingB: estimateRating(ab),
+    tallies: summariseTallies(state.reports, state.moves),
+    critical: criticalMoments(state.reports, state.moves, state.evals),
+    moveLine: moveLine(state.moves, state.reports),
+    meSide: meSide(),
+  });
+}
+
+function makeMovePrompt() {
+  const idx = state.ply - 1;
+  const mv = state.moves[idx];
+  const rep = state.reports[idx];
+  let bestSan = null;
+  if (rep && !rep.isBest && rep.bestUci && rep.cls !== 'book') {
+    const c = new Chess(mv.fenBefore);
+    try {
+      const bm = c.move({
+        from: rep.bestUci.slice(0, 2),
+        to: rep.bestUci.slice(2, 4),
+        promotion: rep.bestUci[4] || 'q',
+      });
+      if (bm) bestSan = bm.san;
+    } catch (_) {}
+  } else if (rep && rep.isBest) {
+    bestSan = mv.san;
+  }
+
+  const start = Math.max(0, idx - 5);
+  const recent = state.moves.slice(start, idx + 1).map((m, i) => {
+    const j = start + i;
+    const num = Math.floor(j / 2) + 1;
+    return (j % 2 === 0 ? `${num}. ` : '') + m.san;
+  }).join(' ');
+
+  return buildMovePrompt({
+    white: state.meta.white.name,
+    black: state.meta.black.name,
+    meSide: meSide(),
+    ply: state.ply,
+    moveNum: Math.floor(idx / 2) + 1,
+    san: mv.san,
+    color: mv.color,
+    cls: rep ? labelOf(rep.cls) : null,
+    cpBefore: fmtCpShort(state.evals[idx]?.cpWhite),
+    cpAfter: fmtCpShort(state.evals[idx + 1]?.cpWhite),
+    bestSan,
+    fenAfter: mv.fenAfter,
+    recent,
+    opening: state.meta.opening,
+  });
 }
 
 $('ctl-first').onclick = () => goto(0, { animate: false });
@@ -614,11 +793,30 @@ window.addEventListener('resize', () => { if (!$('screen-review').hidden) render
 
 $('depth-select').onchange = () => { if (state.moves.length) runAnalysis(); };
 
+/* ─────────────────── sidebar tabs ─────────────────── */
+function setSideTab(name) {
+  const overview = name === 'overview';
+  $('tab-overview').classList.toggle('active', overview);
+  $('tab-moves').classList.toggle('active', !overview);
+  $('tab-overview').setAttribute('aria-selected', overview ? 'true' : 'false');
+  $('tab-moves').setAttribute('aria-selected', overview ? 'false' : 'true');
+  $('panel-overview').hidden = !overview;
+  $('panel-moves').hidden = overview;
+  if (!overview) {
+    const cur = $('movelist')?.querySelector('.mv.current');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  }
+}
+$('tab-overview').onclick = () => setSideTab('overview');
+$('tab-moves').onclick = () => setSideTab('moves');
+
 /* ─────────────────── analysis ─────────────────── */
 function stopAnalysis() {
   state.running = false;
   state.analysisToken++;
   if (state.pool) { state.pool.destroy(); state.pool = null; }
+  if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
+  if (state.coachTimer) { clearTimeout(state.coachTimer); state.coachTimer = null; }
 }
 
 async function runAnalysis() {

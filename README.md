@@ -5,7 +5,8 @@ move-by-move report with Brilliant / Great / Best / Excellent / Good / Book /
 Inaccuracy / Mistake / Miss / Blunder badges, per-side accuracy, an estimated
 game rating, an evaluation timeline and a move list.
 
-Stockfish runs locally in Web Workers — no server, no API keys, nothing uploaded.
+Stockfish runs locally in Web Workers — no server for engine analysis.
+Coach Overview uses Gemma 4 31B (thinking) via the Google Generative Language API.
 
 ## Run it locally
 
@@ -14,6 +15,12 @@ ES modules and Web Workers need a real server (not `file://`):
     python3 -m http.server 8000
     # then open http://localhost:8000
 
+For Coach Overview on a static server, copy the example config and paste your key:
+
+    cp js/coach-config.example.js js/coach-config.js
+    # edit GOOGLE_API_KEY inside
+
+Or run `vercel dev` with `GOOGLE_API_KEY` in `.env` so `/api/coach` proxies the call.
 ## Deploy to Vercel
 
 Option A — CLI (fastest):
@@ -38,7 +45,9 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 | `js/book.js` | small opening book for the Book badge |
 | `js/chesscom.js` | public Chess.com API client |
 | `js/icons.js` | the badge artwork (inline SVG) |
-| `js/app.js` | board, eval bar, timeline, move list, report panel |
+| `js/app.js` | board, eval bar, timeline, move list, report panel, coach wiring |
+| `js/coach.js` | Coach Overview prompts + Gemma client |
+| `api/coach.js` | Vercel proxy for Gemma (uses `GOOGLE_API_KEY`) |
 
 ### Classification rules
 

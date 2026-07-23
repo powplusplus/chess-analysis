@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+js/coach-config.js
+.vercel
+node_modules
