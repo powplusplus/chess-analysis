@@ -214,6 +214,76 @@ async function loadAsset(url, onProgress, keepBuffer = true) {
   return { buf, fromCache: false };
 }
 
+/**
+ * MT same-origin large wasm: download + compile in ONE streaming pass.
+ *
+ * The old path streamed the full 110MB deep build only to warm the HTTP cache
+ * and then threw the bytes away — leaving every pool worker to recompile the
+ * whole module from scratch (deep runs a pool of 2 → two 110MB compiles), and
+ * every repeat visit to compile again. Compiling here with
+ * `WebAssembly.compileStreaming` costs no extra wall time (it overlaps the
+ * download that happened anyway) but primes the browser's persistent WASM
+ * *code cache*: the workers' compiles of the same URL — and future visits —
+ * become cache hits instead of recompiling the NNUE. Best-effort throughout:
+ * any failure falls back to a plain cache-warming read, so the worker just
+ * compiles as before (never worse than today).
+ */
+async function warmAndCompileWasm(url, onProgress) {
+  if (typeof WebAssembly === 'undefined' || !WebAssembly.compileStreaming) {
+    await loadAsset(url, onProgress, false);
+    return;
+  }
+  const res = await fetch(url, { cache: 'force-cache' });
+  if (!res.ok) throw new Error('Engine download failed (' + res.status + ') for ' + url);
+  if (!res.body || !res.body.getReader) {
+    await loadAsset(url, onProgress, false);
+    return;
+  }
+
+  const total = Number(res.headers.get('content-length')) || 0;
+  let loaded = 0;
+  let drained = false;
+  // Pull one chunk at a time so the compiler's backpressure paces the reader —
+  // we never buffer the full NNUE, and progress tracks bytes as they're consumed.
+  const reader = res.body.getReader();
+  const stream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          drained = true;
+          onProgress?.(total || loaded, total || loaded);
+          controller.close();
+          return;
+        }
+        loaded += value.byteLength;
+        onProgress?.(loaded, total);
+        controller.enqueue(value);
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      try { reader.cancel(reason); } catch (_) { /* already closed */ }
+    },
+  });
+
+  try {
+    // Discard the Module — the worker can't reuse the object, but compiling it
+    // here is what populates the code cache the worker's compile will hit.
+    await WebAssembly.compileStreaming(
+      new Response(stream, { headers: { 'Content-Type': 'application/wasm' } }),
+    );
+  } catch (_) {
+    // Couldn't compile/cache (unexpected MIME, unsupported response). Make sure
+    // the HTTP cache is still warm so the worker doesn't re-download over the
+    // network; if the stream already drained the fetch, it's warm already.
+    if (!drained) {
+      try { await loadAsset(url, onProgress, false); } catch (_) { /* surfaced elsewhere */ }
+    }
+  }
+}
+
 /** Prefetch JS (+ WASM); reports {loaded,total,pct,label,fromCache}. Returns resolved cfg. */
 export function prefetchEngine(mode, onProgress) {
   const key = mode;
@@ -255,11 +325,21 @@ export function prefetchEngine(mode, onProgress) {
         report();
         return;
       }
-      const { buf, fromCache } = await loadAsset(url, (loaded, total) => {
+      const onBytes = (loaded, total) => {
         loadedArr[i] = loaded;
         if (total > 0) { sizes[i] = total; known[i] = true; }
         report();
-      }, needBlobs);
+      };
+      // MT same-origin wasm: one streaming pass downloads, warms the HTTP cache,
+      // and primes the WASM code cache so workers/repeat visits skip recompiling
+      // the (110MB) NNUE — the main slowdown for deep vs the smaller builds.
+      if (!needBlobs && cfg.wasm && url === cfg.wasm) {
+        anyNetwork = true;
+        await warmAndCompileWasm(url, onBytes);
+        report();
+        return;
+      }
+      const { buf, fromCache } = await loadAsset(url, onBytes, needBlobs);
       if (!fromCache) anyNetwork = true;
       if (buf && !known[i]) {
         sizes[i] = buf.byteLength;
