@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Game Review - free chess analysis with Stockfish</title>
-<meta name="description" content="Paste a username, pick a game, get a full move-by-move review: accuracy, brilliant moves, blunders and an evaluation timeline. Stockfish runs in your browser.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2381b64c'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%23fff'%3E%E2%99%9E%3C/text%3E%3C/svg%3E">
+<title>MCR - Magnus Chess Review</title>
+<meta name="description" content="MCR (Magnus Chess Review): paste a username, pick a game, get a full move-by-move review — accuracy, brilliant moves, blunders and an evaluation timeline. Stockfish runs in your browser.">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:opsz,wght@6..12,500;6..12,600;6..12,700;6..12,800&display=swap" rel="stylesheet">
@@ -16,16 +17,16 @@
 <div class="app-shell">
   <!-- Chess.com-style left rail -->
   <nav class="rail" aria-label="Main">
-    <a class="rail-brand" href="./" title="Game Review">♞</a>
+    <a class="rail-brand" href="./" title="MCR — Magnus Chess Review"><img src="assets/magnus.png" width="40" height="40" alt="MCR"></a>
     <a class="rail-item active" href="./" title="Review"><span class="rail-ico">✦</span><span class="rail-lbl">Review</span></a>
     <button class="rail-item" id="rail-new" type="button" title="New game"><span class="rail-ico">＋</span><span class="rail-lbl">New</span></button>
   </nav>
 
   <div class="app-main">
     <header class="topbar">
-      <a class="brand" href="./">
-        <span class="brand-mark">♞</span>
-        <span class="brand-name">Game Review</span>
+      <a class="brand" href="./" title="Magnus Chess Review">
+        <img class="brand-mark" src="assets/magnus.png" width="30" height="30" alt="">
+        <span class="brand-name">MCR</span>
       </a>
       <div class="topbar-right">
         <button class="btn btn-ghost" id="btn-new" type="button">New game</button>
@@ -36,7 +37,9 @@
     <main class="screen screen-search" id="screen-search">
       <div class="hero">
         <div class="hero-badge">Local Stockfish analysis</div>
-        <h1>Game Review</h1>
+        <img class="hero-logo" src="assets/magnus.png" width="72" height="72" alt="">
+        <h1>MCR</h1>
+        <p class="hero-tag">Magnus Chess Review</p>
         <p class="hero-sub">Enter a Chess.com username or paste a PGN. Analysis runs in-browser.</p>
 
         <form class="search-row" id="form-user">
@@ -119,7 +122,7 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <span class="sidebar-icon">✦</span>
-          <h2>Game Review</h2>
+          <h2>MCR</h2>
           <select id="depth-select" class="depth-select" title="Engine mode">
             <option value="fast">Fast</option>
             <option value="balanced" selected>Balanced</option>
