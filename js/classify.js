@@ -8,11 +8,15 @@ const MATE_CP = 10000;
 const VALUES = { p: 1, n: 3, b: 3.2, r: 5, q: 9, k: 0 };
 const NON_PAWN = { n: 3, b: 3.2, r: 5, q: 9, k: 0 };
 
-// Great / Brilliant specials (base EP bands unchanged).
-const GREAT_LOSING = 40;
-const GREAT_WINNING = 60;
-const ONLY_MOVE_GAP = 20;
-const BRILLIANT_CP_MAX = 200;
+// Great / Brilliant specials (base EP bands unchanged). Stricter than
+// Chess.com's rating-generous bands so casual best-moves stay Best.
+const GREAT_LOSING = 35;
+const GREAT_WINNING = 65;
+const GREAT_SWING_MIN = 12;       // must actually move win% by this much
+const ONLY_MOVE_GAP = 30;         // MultiPV gap (was 20)
+const ONLY_MOVE_SECOND_MAX = 28;  // 2nd-best clearly losing
+const BRILLIANT_CP_MAX = 150;     // not already clearly better (was 200)
+const BRILLIANT_AFTER_MIN = 42;   // not left in a bad seat
 const SAC_MIN = 3;
 
 // Engine score -> centipawns from White's point of view.
@@ -91,10 +95,12 @@ function playUci(chess, uci) {
 }
 
 function isOutcomeSwing(wFrom, wTo) {
+  if (wTo - wFrom < GREAT_SWING_MIN) return false;
   return (wFrom < GREAT_LOSING && wTo >= GREAT_LOSING)
       || (wFrom < GREAT_WINNING && wTo >= GREAT_WINNING);
 }
 
+// Real piece leave / hang — not a temporary PV dip that recovers next move.
 function isPieceSacrifice(beforeFen, afterFen, uci, pv, mover) {
   const c = new Chess(beforeFen);
   const matBefore = materialBalance(c, mover);
@@ -106,8 +112,9 @@ function isPieceSacrifice(beforeFen, afterFen, uci, pv, mover) {
   const immediateNonPawn = nonPawnBefore - nonPawnBalance(c, mover);
   if (immediateDrop >= SAC_MIN && immediateNonPawn >= SAC_MIN) return true;
 
-  const low = lowestMaterialInPv(afterFen, pv, mover, 6, VALUES);
-  const lowNonPawn = lowestMaterialInPv(afterFen, pv, mover, 6, NON_PAWN);
+  // Still down a piece after opponent's reply + our follow-up (2 plies).
+  const low = lowestMaterialInPv(afterFen, pv, mover, 2, VALUES);
+  const lowNonPawn = lowestMaterialInPv(afterFen, pv, mover, 2, NON_PAWN);
   return low <= matBefore - SAC_MIN && lowNonPawn <= nonPawnBefore - SAC_MIN;
 }
 
@@ -165,17 +172,24 @@ export function classifyMove(ctx) {
     if ((hadMate && !stillMate) || (wBefore >= 75 && wAfter <= 55)) cls = 'miss';
   }
 
-  // Great: outcome swing (incl. 2-ply capitalisation) or strict only-move.
+  // Great: big outcome swing (incl. 2-ply capitalisation) or harsh only-move.
+  // Near-best alone never enough — must be engine best.
   let sacrifice = false;
-  if (!book && (isBest || drop < 1)) {
-    const swingNow = drop <= 2 && isOutcomeSwing(wBefore, wAfter);
-    const swingPrev = hasPrev && drop <= 2 && isOutcomeSwing(wBeforePrev, wAfter);
-    const onlyMove = gap >= ONLY_MOVE_GAP && wSecond < GREAT_LOSING && Math.abs(cpBefore) < 900;
+  if (!book && isBest && drop <= 1) {
+    const swingNow = isOutcomeSwing(wBefore, wAfter);
+    const swingPrev = hasPrev && isOutcomeSwing(wBeforePrev, wAfter);
+    const onlyMove = gap >= ONLY_MOVE_GAP
+      && wSecond < ONLY_MOVE_SECOND_MAX
+      && wBefore < GREAT_WINNING
+      && Math.abs(cpBefore) < 900;
     if (swingNow || swingPrev || onlyMove) cls = 'great';
   }
 
-  // Brilliant: best-only sound piece sac, not already winning, position holds.
-  if (!book && isBest && wAfter >= wBefore - 0.5 && moverCp < BRILLIANT_CP_MAX) {
+  // Brilliant: best piece-sac that holds/improves, not already better, not bad after.
+  if (!book && isBest
+      && wAfter >= wBefore
+      && wAfter >= BRILLIANT_AFTER_MIN
+      && moverCp < BRILLIANT_CP_MAX) {
     const pv = after.lines[0] ? after.lines[0].pv : [];
     if (isPieceSacrifice(before.fen, after.fen, uci, pv, mover)) {
       sacrifice = true;

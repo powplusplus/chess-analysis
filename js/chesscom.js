@@ -1,6 +1,45 @@
 // Reads the public Chess.com API straight from the browser.
 const API = 'https://api.chess.com/pub';
 
+/** @type {Map<string, Promise<{username:string,title:string|null,avatar:string|null}>>} */
+const profileCache = new Map();
+
+export async function fetchPlayer(username) {
+  const user = String(username || '').trim().toLowerCase();
+  if (!user || !/^[\w.-]{2,30}$/.test(user)) {
+    return { username: user, title: null, avatar: null };
+  }
+  if (profileCache.has(user)) return profileCache.get(user);
+
+  const p = (async () => {
+    try {
+      const res = await fetch(`${API}/player/${encodeURIComponent(user)}`);
+      if (!res.ok) return { username: user, title: null, avatar: null };
+      const d = await res.json();
+      return {
+        username: d.username || user,
+        title: d.title || null,
+        avatar: d.avatar || null,
+      };
+    } catch {
+      return { username: user, title: null, avatar: null };
+    }
+  })();
+  profileCache.set(user, p);
+  return p;
+}
+
+export async function fetchPlayers(names) {
+  const unique = [...new Set(
+    names.map(n => String(n || '').trim().toLowerCase()).filter(Boolean)
+  )];
+  const profiles = await Promise.all(unique.map(fetchPlayer));
+  const map = new Map();
+  for (const p of profiles) map.set(p.username.toLowerCase(), p);
+  for (const u of unique) if (!map.has(u)) map.set(u, { username: u, title: null, avatar: null });
+  return map;
+}
+
 export async function fetchRecentGames(username, want = 30) {
   const user = username.trim().toLowerCase();
   if (!/^[\w.-]{2,30}$/.test(user)) throw new Error('That does not look like a username.');

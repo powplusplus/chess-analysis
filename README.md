@@ -57,11 +57,13 @@ percentage compared with the engine's best move:
 * **Best** - matches the engine's first choice
 * **Excellent** < 2% lost · **Good** < 5% · **Inaccuracy** < 10% · **Mistake** < 20% · **Blunder** ≥ 20%
 * **Miss** - you were winning (≥75%) and dropped to level or worse
-* **Great** - near-best move that either swings the outcome (losing→equal or
-  equal→winning, win% bands 40/60; also vs prior same-colour position) or is a
-  strict only-move (MultiPV gap ≥20% and second-best still losing)
-* **Brilliant** - the engine's best move that sacs a piece (≥3 material, no
-  pawn gambits), holds the position, and wasn't already winning (<200 cp)
+* **Great** - engine best that either swings outcome hard (losing→equal or
+  equal→winning, win% bands 35/65, ≥12% swing; also vs prior same-colour
+  position) or is a harsh only-move (MultiPV gap ≥30%, 2nd-best <28%, not
+  already winning)
+* **Brilliant** - engine best that sacs a piece (≥3 non-pawn, immediate or
+  still down after 2 PV plies), holds/improves eval, leaves you ≥42% win,
+  and wasn't already clearly better (<150 cp)
 * **Book** - the game is still following a known opening line
 
 Accuracy per move is `103.1668·e^(-0.04354·drop) − 3.1669`; the game figure blends

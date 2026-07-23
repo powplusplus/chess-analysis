@@ -2,12 +2,13 @@ import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
 import { EnginePool, prefetchEngine, ENGINE_MODES } from './engine.js';
 import { icon, colorOf, labelOf } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
-import { fetchRecentGames, summarise, gameIdFromUrl } from './chesscom.js';
+import { fetchRecentGames, fetchPlayers, summarise, gameIdFromUrl } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
   askCoach, buildGameOverviewPrompt, buildMovePrompt,
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
+import { playMoveSound, prefetchSounds } from './sounds.js';
 
 const $ = id => document.getElementById(id);
 const FILES = 'abcdefgh';
@@ -33,6 +34,7 @@ const state = {
   coachReqId: 0,
   coachBusy: false,
   coachTargetKey: null,
+  coachSpeakId: 0,
   user: null,           // chess.com username for current games list
   games: [],            // raw games from last fetch
   gameId: null,         // chess.com game id when reviewing
@@ -138,7 +140,7 @@ async function applyRoute() {
     if (!state.pgnLocal || !state.moves.length) startReview(pgn, null, { localPgn: true });
     else show('review');
     if (token !== routeToken) return;
-    if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true });
+    if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true, sound: false });
     return;
   }
 
@@ -163,7 +165,7 @@ async function applyRoute() {
       if (state.gameId !== route.game || !state.moves.length) startReview(hit.pgn, hit);
       else show('review');
       if (token !== routeToken) return;
-      if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true });
+      if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true, sound: false });
     } catch (ex) {
       if (token !== routeToken) return;
       show('search');
@@ -246,32 +248,90 @@ $('form-pgn').onsubmit = e => {
   }
 };
 
+/* ─────────────────── titles + avatars ─────────────────── */
+function titleBadge(title) {
+  return title ? `<span class="chess-title">${esc(title)}</span>` : '';
+}
+
+function avatarHtml(p, isWhite, cls = 'pavatar') {
+  if (p?.avatar) {
+    return `<span class="${cls}"><img src="${esc(p.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
+  }
+  return `<span class="${cls}"><span class="mini-piece">${pieceSvg(isWhite ? 'w' : 'b', 'k')}</span></span>`;
+}
+
+function playerNameHtml(p) {
+  return `${titleBadge(p.title)}<span class="pname">${esc(p.name)}</span>`;
+}
+
+async function enrichSide(side) {
+  if (!side?.name) return side;
+  const map = await fetchPlayers([side.name]);
+  const p = map.get(side.name.toLowerCase());
+  if (!p) return side;
+  return {
+    ...side,
+    title: side.title || p.title || null,
+    avatar: side.avatar || p.avatar || null,
+  };
+}
+
+async function enrichMetaPlayers(meta) {
+  if (!meta) return meta;
+  const [white, black] = await Promise.all([enrichSide(meta.white), enrichSide(meta.black)]);
+  return { ...meta, white, black };
+}
+
 /* ─────────────────── game picker ─────────────────── */
-function renderGames(user, games) {
+async function renderGames(user, games) {
   $('games-title').textContent = `Recent games - ${user}`;
   const list = $('games-list');
   list.innerHTML = '';
-  games.forEach(g => {
-    const s = summarise(g, user);
-    const card = document.createElement('button');
-    card.className = 'game-card';
-    card.innerHTML = `
-      <div class="game-tc">${s.timeControl}<br>${s.timeClass}</div>
-      <div class="game-players">
-        <span class="game-side"><i class="chip chip-w"></i>${esc(s.white.name)} <span class="game-elo">${s.white.rating ?? ''}</span></span>
-        <span class="game-side"><i class="chip chip-b"></i>${esc(s.black.name)} <span class="game-elo">${s.black.rating ?? ''}</span></span>
-      </div>
-      <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
-      <span class="game-date">${s.date ? s.date.toLocaleDateString() : ''}</span>`;
-    card.onclick = () => {
-      if (!s.id) return;
-      startReview(s.pgn, s);
-      setUrl({ user, game: s.id });
-      setTitle({ user, game: s.id });
-    };
-    list.appendChild(card);
-  });
-  if (!games.length) list.innerHTML = '<p class="games-empty">No games found.</p>';
+  if (!games.length) {
+    list.innerHTML = '<p class="games-empty">No games found.</p>';
+    return;
+  }
+
+  const summaries = games.map(g => summarise(g, user));
+  const paint = () => {
+    list.innerHTML = '';
+    summaries.forEach(s => {
+      const card = document.createElement('button');
+      card.className = 'game-card';
+      card.innerHTML = `
+        <div class="game-tc">${s.timeControl}<br>${s.timeClass}</div>
+        <div class="game-players">
+          <span class="game-side">${avatarHtml(s.white, true, 'gavatar')}${titleBadge(s.white.title)}<span class="pname">${esc(s.white.name)}</span> <span class="game-elo">${s.white.rating ?? ''}</span></span>
+          <span class="game-side">${avatarHtml(s.black, false, 'gavatar')}${titleBadge(s.black.title)}<span class="pname">${esc(s.black.name)}</span> <span class="game-elo">${s.black.rating ?? ''}</span></span>
+        </div>
+        <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
+        <span class="game-date">${s.date ? s.date.toLocaleDateString() : ''}</span>`;
+      card.onclick = () => {
+        if (!s.id) return;
+        startReview(s.pgn, s);
+        setUrl({ user, game: s.id });
+        setTitle({ user, game: s.id });
+      };
+      list.appendChild(card);
+    });
+  };
+
+  paint();
+
+  const names = summaries.flatMap(s => [s.white.name, s.black.name]);
+  const profiles = await fetchPlayers(names);
+  let changed = false;
+  for (const s of summaries) {
+    for (const side of ['white', 'black']) {
+      const p = profiles.get(String(s[side].name || '').toLowerCase());
+      if (!p) continue;
+      if (s[side].title !== p.title || s[side].avatar !== p.avatar) {
+        s[side] = { ...s[side], title: p.title || null, avatar: p.avatar || null };
+        changed = true;
+      }
+    }
+  }
+  if (changed) paint();
 }
 
 /* ─────────────────── loading a game ─────────────────── */
@@ -301,9 +361,19 @@ function startReview(pgn, meta, opts = {}) {
   state.reports = new Array(moves.length).fill(null);
   state.ply = 0;
   state.meta = meta || {
-    white: { name: headers.White || 'White', rating: headers.WhiteElo },
-    black: { name: headers.Black || 'Black', rating: headers.BlackElo },
+    white: {
+      name: headers.White || 'White',
+      rating: headers.WhiteElo,
+      title: headers.WhiteTitle || null,
+    },
+    black: {
+      name: headers.Black || 'Black',
+      rating: headers.BlackElo,
+      title: headers.BlackTitle || null,
+    },
   };
+  if (!state.meta.white.title && headers.WhiteTitle) state.meta.white.title = headers.WhiteTitle;
+  if (!state.meta.black.title && headers.BlackTitle) state.meta.black.title = headers.BlackTitle;
   state.meta.opening = headers.ECOUrl ? prettyOpening(headers.ECOUrl) : (headers.Opening || null);
   state.meta.eco = headers.ECO || null;
   state.flipped = meta ? !meta.meIsWhite : false;
@@ -313,6 +383,7 @@ function startReview(pgn, meta, opts = {}) {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  stopCoachSpeech();
   state.gameId = meta?.id || gameIdFromUrl(meta?.url) || null;
   state.pgnLocal = !!opts.localPgn;
 
@@ -321,6 +392,16 @@ function startReview(pgn, meta, opts = {}) {
   renderAll();
   setCoachPlaceholder('Engine analysing. Press Analyze when the report is ready.');
   runAnalysis();
+
+  const gameToken = state.gameId || state.meta.white.name + '|' + state.meta.black.name;
+  enrichMetaPlayers(state.meta).then(enriched => {
+    if (!state.meta) return;
+    const cur = state.gameId || state.meta.white.name + '|' + state.meta.black.name;
+    if (cur !== gameToken) return;
+    state.meta = enriched;
+    renderPlayers();
+    if (!$('report').hidden) renderReport();
+  });
 }
 
 function parseHeaders(pgn) {
@@ -405,8 +486,12 @@ function animatePlyChange(fromPly, toPly) {
   const a = sqCenter(from), b = sqCenter(to);
   if (!a.size) return Promise.resolve();
 
-  // Hide both ends — FEN already has piece at dest; undo-capture also sits on origin
-  renderBoard({ skipPiecesOn: [from, to] });
+  // Paint pre-move FEN so a captured piece stays until the flyer lands.
+  // Only hide the mover on its origin square.
+  const savedPly = state.ply;
+  state.ply = Math.min(fromPly, toPly);
+  renderBoard({ skipPiecesOn: [mv.from] });
+  state.ply = savedPly;
 
   const flyer = document.createElement('div');
   flyer.className = 'piece-flyer';
@@ -467,8 +552,8 @@ function renderPlayers() {
 
   const strip = (p, isWhite) => {
     const adv = isWhite ? mat : -mat;
-    return `<span class="pavatar"><span class="mini-piece">${pieceSvg(isWhite ? 'w' : 'b', 'k')}</span></span>
-      <span class="pname">${esc(p.name)}</span>
+    return `${avatarHtml(p, isWhite)}
+      ${playerNameHtml(p)}
       <span class="pelo">${p.rating ? '(' + p.rating + ')' : ''}</span>
       ${adv > 0 ? `<span class="padv">+${adv}</span>` : ''}`;
   };
@@ -606,8 +691,8 @@ function renderReport() {
   }
   $('report').hidden = false;
 
-  $('rep-white-name').textContent = state.meta.white.name;
-  $('rep-black-name').textContent = state.meta.black.name;
+  $('rep-white-name').innerHTML = `${avatarHtml(state.meta.white, true, 'ravatar')}${playerNameHtml(state.meta.white)}`;
+  $('rep-black-name').innerHTML = `${avatarHtml(state.meta.black, false, 'ravatar')}${playerNameHtml(state.meta.black)}`;
 
   const accs = { w: [], b: [] };
   const counts = { w: {}, b: {} };
@@ -752,10 +837,18 @@ $('graph').addEventListener('click', e => {
 
 /* ─────────────────── navigation ─────────────────── */
 async function goto(ply, opts = {}) {
-  const { animate = true, skipUrl = false } = opts;
+  const { animate = true, skipUrl = false, sound = true } = opts;
   const next = Math.max(0, Math.min(state.moves.length, ply));
   const prev = state.ply;
   if (next === prev) { renderAll(); return; }
+
+  stopCoachSpeech();
+
+  // Chess.com move click only on single-ply steps (scrub/jump stays quiet).
+  if (sound && Math.abs(next - prev) === 1) {
+    const mv = state.moves[Math.max(prev, next) - 1];
+    playMoveSound(mv);
+  }
 
   if (animate && !state.animating && Math.abs(next - prev) === 1) {
     state.animating = true;
@@ -778,10 +871,47 @@ function renderAll() {
 }
 
 /* ─────────────────── coach overview ─────────────────── */
+function stopCoachSpeech() {
+  state.coachSpeakId++;
+  try {
+    if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+  } catch { /* ignore */ }
+}
+
+function speakCoach(text) {
+  stopCoachSpeech();
+  const spoken = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!spoken || typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
+    return;
+  }
+  const id = state.coachSpeakId;
+  const u = new SpeechSynthesisUtterance(spoken);
+  u.rate = 1.02;
+  u.pitch = 1;
+  // Chrome often drops speak() if it follows cancel() in the same tick.
+  setTimeout(() => {
+    if (id !== state.coachSpeakId) return;
+    try { speechSynthesis.speak(u); } catch { /* ignore */ }
+  }, 40);
+}
+
 function setCoachPlaceholder(msg, isErr = false) {
   const body = $('coach-body');
   body.classList.toggle('thinking', !isErr);
   body.innerHTML = `<p class="${isErr ? 'coach-err' : 'coach-placeholder'}">${esc(msg)}</p>`;
+}
+
+function setCoachGenerating() {
+  const body = $('coach-body');
+  body.classList.add('thinking');
+  body.innerHTML = `<div class="coach-skel" aria-busy="true" aria-label="Coach generating">
+    <div class="coach-skel-line"></div>
+    <div class="coach-skel-line"></div>
+    <div class="coach-skel-line"></div>
+    <div class="coach-skel-line"></div>
+    <div class="coach-skel-line"></div>
+    <div class="coach-skel-line"></div>
+  </div>`;
 }
 
 function setCoachText(text) {
@@ -828,6 +958,7 @@ function syncCoachUi() {
     state.coachBusy = false;
     state.coachTargetKey = null;
     state.coachReqId++;
+    stopCoachSpeech();
   }
 
   const ready = analysisReady() && state.moves.length > 0;
@@ -849,7 +980,7 @@ function syncCoachUi() {
     return;
   }
   if (state.coachBusy) {
-    setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
+    setCoachGenerating();
     return;
   }
   setCoachPlaceholder(state.ply === 0
@@ -861,18 +992,21 @@ async function runCoachAnalyze() {
   if (!analysisReady() || state.coachBusy) return;
   const cacheKey = coachCacheKey();
   if (state.coachCache.has(cacheKey)) {
-    setCoachText(state.coachCache.get(cacheKey));
+    const cached = state.coachCache.get(cacheKey);
+    setCoachText(cached);
+    speakCoach(cached);
     return;
   }
 
   if (state.coachAbort) state.coachAbort.abort();
+  stopCoachSpeech();
   const ac = new AbortController();
   state.coachAbort = ac;
   const reqId = ++state.coachReqId;
   state.coachBusy = true;
   state.coachTargetKey = cacheKey;
   $('btn-coach-analyze').disabled = true;
-  setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
+  setCoachGenerating();
 
   let prompt;
   try {
@@ -893,6 +1027,7 @@ async function runCoachAnalyze() {
     state.coachBusy = false;
     state.coachTargetKey = null;
     setCoachText(cleaned);
+    speakCoach(cleaned);
     syncCoachUi();
   } catch (ex) {
     if (ex.name === 'AbortError') return;
@@ -1051,6 +1186,7 @@ function stopAnalysis() {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  stopCoachSpeech();
 }
 
 async function runAnalysis() {
@@ -1199,4 +1335,5 @@ function esc(s) {
 
 // deep-link + browser back/forward
 window.addEventListener('popstate', () => { applyRoute(); });
+prefetchSounds();
 applyRoute();

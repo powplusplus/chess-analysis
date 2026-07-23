@@ -89,10 +89,6 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
   border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;
 }
 .brand{display:flex;align-items:center;gap:9px;text-decoration:none;color:var(--txt)}
-.brand-mark{
-  width:30px;height:30px;border-radius:8px;object-fit:cover;
-  display:block;background:#000;flex:none;
-}
 .brand-name{font-weight:800;font-size:17px;letter-spacing:-.02em}
 
 .btn{
@@ -161,10 +157,22 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
 .game-card:hover{background:var(--panel-2);border-color:#4a4742}
 .game-tc{font-size:12px;font-weight:800;color:var(--txt-dim);text-align:center;line-height:1.25;text-transform:capitalize}
 .game-players{display:flex;flex-direction:column;gap:4px;min-width:0}
-.game-side{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden}
+.game-side{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden}
+.game-side .pname{overflow:hidden;text-overflow:ellipsis}
 .chip{width:12px;height:12px;border-radius:2px;flex:none;border:1px solid #00000055}
 .chip-w{background:#f1f1f1}
 .chip-b{background:#403d3a}
+.gavatar{
+  width:22px;height:22px;border-radius:3px;background:var(--panel-2);
+  display:grid;place-items:center;overflow:hidden;flex:none;
+}
+.gavatar img{width:100%;height:100%;object-fit:cover;display:block}
+.gavatar .mini-piece{width:18px;height:18px;display:block}
+.chess-title{
+  display:inline-block;flex:none;background:#c8102e;color:#fff;
+  font-size:10px;font-weight:800;letter-spacing:.03em;line-height:1.25;
+  padding:1px 4px;border-radius:2px;vertical-align:middle;text-transform:uppercase;
+}
 .game-elo{color:var(--txt-faint);font-size:12.5px;font-weight:600}
 .game-res{font-weight:800;font-size:12px;padding:4px 10px;border-radius:5px;background:#1a1917;text-transform:uppercase;letter-spacing:.04em}
 .res-win{color:#a7d977}.res-loss{color:#ff9182}.res-draw{color:var(--txt-dim)}
@@ -221,11 +229,13 @@ body.reviewing .topbar{padding:6px 14px}
   margin-left:auto;background:var(--panel);color:var(--txt-dim);
   font-size:11.5px;font-weight:800;padding:2px 6px;border-radius:4px;
 }
+.player-strip .chess-title{font-size:11px;padding:2px 5px}
 .pavatar{
   width:28px;height:28px;border-radius:4px;background:var(--panel-2);
-  display:grid;place-items:center;overflow:hidden;flex:none;padding:1px;
+  display:grid;place-items:center;overflow:hidden;flex:none;padding:0;
 }
-.pavatar .mini-piece{width:24px;height:24px;display:block}
+.pavatar img{width:100%;height:100%;object-fit:cover;display:block}
+.pavatar .mini-piece{width:24px;height:24px;display:block;padding:1px}
 
 .evalbar{
   position:relative;width:var(--eval-w);border-radius:3px;overflow:hidden;
@@ -256,9 +266,9 @@ body.reviewing .topbar{padding:6px 14px}
 .sq.light{background:var(--sq-light)}
 .sq.dark{background:var(--sq-dark)}
 .sq.hl::after{content:"";position:absolute;inset:0;background:var(--sq-hl)}
-.sq .coord{position:absolute;font-size:10px;font-weight:800;opacity:.75;z-index:1;pointer-events:none}
-.sq .coord.file{right:3px;bottom:1px}
-.sq .coord.rank{left:3px;top:1px}
+.sq .coord{position:absolute;font-size:13px;font-weight:800;opacity:.85;z-index:1;pointer-events:none;line-height:1}
+.sq .coord.file{right:4px;bottom:2px}
+.sq .coord.rank{left:4px;top:2px}
 .sq.light .coord{color:var(--sq-coord-dark)}
 .sq.dark .coord{color:var(--sq-coord-light)}
 
@@ -343,10 +353,17 @@ body.reviewing .topbar{padding:6px 14px}
 }
 .report:not([hidden]) ~ .report-placeholder{display:none}
 .row{display:grid;grid-template-columns:64px 1fr 64px;align-items:center;gap:4px;padding:3px 0}
+.row-players{grid-template-columns:minmax(0,1fr) 12px minmax(0,1fr);padding-bottom:6px;margin-bottom:2px}
 .cell-mid{text-align:center;color:var(--txt-dim);font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-.cell-w,.cell-b{font-size:12.5px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cell-b{text-align:right}
-.row-players{padding-bottom:6px;margin-bottom:2px}
+.cell-w,.cell-b{font-size:12.5px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:5px;min-width:0}
+.cell-w .pname,.cell-b .pname{overflow:hidden;text-overflow:ellipsis}
+.cell-b{text-align:right;flex-direction:row-reverse}
+.ravatar{
+  width:20px;height:20px;border-radius:3px;background:var(--panel-2);
+  display:grid;place-items:center;overflow:hidden;flex:none;
+}
+.ravatar img{width:100%;height:100%;object-fit:cover;display:block}
+.ravatar .mini-piece{width:16px;height:16px;display:block}
 .acc,.rating{
   font-weight:800;font-size:16px;text-align:center;border-radius:5px;padding:5px 0;
   font-family:var(--mono);
@@ -426,10 +443,6 @@ body.reviewing .topbar{padding:6px 14px}
   display:flex;align-items:center;gap:10px;padding:12px 14px 8px;flex:none;
   background:#262421;border-bottom:1px solid var(--line);
 }
-.coach-avatar{
-  width:44px;height:44px;border-radius:50%;object-fit:cover;object-position:center top;
-  background:#000;flex:none;box-shadow:0 0 0 2px #3a3733;
-}
 .coach-titles{min-width:0}
 .coach-title{font-size:13.5px;font-weight:800;letter-spacing:-.01em}
 .coach-sub{margin:1px 0 0;font-size:11.5px;color:var(--txt-faint);font-weight:700}
@@ -442,6 +455,33 @@ body.reviewing .topbar{padding:6px 14px}
 .coach-body .coach-placeholder{color:var(--txt-faint);font-style:italic}
 .coach-body.thinking{color:var(--txt-faint)}
 .coach-body .coach-err{color:var(--c-blunder)}
+.coach-skel{display:flex;flex-direction:column;gap:10px;padding:2px 0}
+.coach-skel-line{
+  height:12px;border-radius:6px;
+  background:linear-gradient(
+    105deg,
+    #2a2724 0%,
+    #2a2724 38%,
+    #3d3934 50%,
+    #2a2724 62%,
+    #2a2724 100%
+  );
+  background-size:220% 100%;
+  animation:coach-shimmer 1.35s ease-in-out infinite;
+}
+.coach-skel-line:nth-child(1){width:94%}
+.coach-skel-line:nth-child(2){width:82%}
+.coach-skel-line:nth-child(3){width:88%}
+.coach-skel-line:nth-child(4){width:64%;margin-top:6px}
+.coach-skel-line:nth-child(5){width:76%}
+.coach-skel-line:nth-child(6){width:52%}
+@keyframes coach-shimmer{
+  0%{background-position:100% 0}
+  100%{background-position:-100% 0}
+}
+@media (prefers-reduced-motion:reduce){
+  .coach-skel-line{animation:none;background:#2f2c28}
+}
 .coach-actions{
   flex:none;padding:10px 14px 12px;background:#262421;border-top:1px solid var(--line);
 }
