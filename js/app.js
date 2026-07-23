@@ -1264,6 +1264,26 @@ function makeMovePrompt() {
     bestSan = mv.san;
   }
 
+  let bestLine = null;
+  if (rep?.bestPv?.length) {
+    const c = new Chess(mv.fenBefore);
+    const sans = [];
+    for (const uci of rep.bestPv.slice(0, 8)) {
+      try {
+        const m = c.move({
+          from: uci.slice(0, 2),
+          to: uci.slice(2, 4),
+          promotion: uci[4] || 'q',
+        });
+        if (!m) break;
+        sans.push(m.san);
+      } catch (_) { break; }
+    }
+    if (sans.length) bestLine = sans.join(' ');
+  } else if (bestSan) {
+    bestLine = bestSan;
+  }
+
   const start = Math.max(0, idx - 5);
   const recent = state.moves.slice(start, idx + 1).map((m, i) => {
     const j = start + i;
@@ -1283,9 +1303,15 @@ function makeMovePrompt() {
     cpBefore: fmtCpShort(state.evals[idx]?.cpWhite),
     cpAfter: fmtCpShort(state.evals[idx + 1]?.cpWhite),
     bestSan,
+    bestLine,
+    fenBefore: mv.fenBefore,
     fenAfter: mv.fenAfter,
     recent,
     opening: state.meta.opening,
+    wBefore: rep?.wBefore ?? null,
+    wAfter: rep?.wAfter ?? null,
+    drop: rep?.drop ?? null,
+    sacrifice: !!rep?.sacrifice,
   });
 }
 

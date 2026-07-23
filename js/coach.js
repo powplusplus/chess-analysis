@@ -19,7 +19,15 @@ Voice rules (strict):
 - Short paragraphs. Direct. No fluff. No emoji. No markdown headings.
 - 2 to 4 short paragraphs max.
 - Sound like a real coach talking to the player, not a textbook.
-- Never only restate the move or its label (Best, Blunder, etc). Explain the idea, the plan, and what to do next.`;
+- Never only restate the move or its label (Best, Blunder, etc). Explain the idea, the plan, and what to do next.
+
+Grounding rules (strict, never break):
+- Use ONLY facts in this prompt: players, result, opening, accuracy, ratings, move tags, evals, engine best, PV, FEN, critical moments.
+- Do NOT invent tactics, checks, captures, pins, forks, mates, threats, or piece placements not supported by those facts.
+- Do NOT invent opening names, ECO codes, or plans beyond the given Opening line.
+- Do NOT invent scores, ratings, or move labels. Trust Engine class and evals over your own recall.
+- If engine best / PV is given, prefer that line. If a detail is missing, omit it. Prefer a shorter true note over a vivid guess.
+- Before writing, silently check each claim against the facts above. Drop any claim you cannot verify.`;
 
 export function buildGameOverviewPrompt(ctx) {
   const {
@@ -65,13 +73,14 @@ Critical moments:
 ${critical || '(none flagged)'}
 Moves: ${moveLine}
 
-Write the overview now.`;
+Write the overview now. Stay inside the facts above. Critical moments and move tags are the only place to cite concrete errors or brilliancies.`;
 }
 
 export function buildMovePrompt(ctx) {
   const {
     white, black, meSide, ply, moveNum, san, color, cls,
-    cpBefore, cpAfter, bestSan, fenAfter, recent, opening,
+    cpBefore, cpAfter, bestSan, bestLine, fenBefore, fenAfter, recent, opening,
+    wBefore, wAfter, drop, sacrifice,
   } = ctx;
 
   const mover = color === 'w' ? 'White' : 'Black';
@@ -100,6 +109,13 @@ No reviewer seat known. Keep the note balanced.`;
     ? `Task: Move analysis for the player who had ${seat}. A move is selected. Explain what went right or wrong for THEM, and what THEY should take from it.`
     : `Task: Move analysis. A move is selected. Explain what went right or wrong on this move, and what to take from it.`;
 
+  const winBits = [
+    wBefore == null ? null : `Mover win% before: ${Number(wBefore).toFixed(1)}`,
+    wAfter == null ? null : `Mover win% after: ${Number(wAfter).toFixed(1)}`,
+    drop == null ? null : `Win% drop: ${Number(drop).toFixed(1)}`,
+    sacrifice ? 'Engine flagged a real piece sacrifice on this move.' : null,
+  ].filter(Boolean).join('\n');
+
   return `${STYLE}
 
 ${task}
@@ -111,12 +127,14 @@ Engine class: ${cls || 'unknown'}
 Eval before (White cp): ${cpBefore ?? 'n/a'}
 Eval after (White cp): ${cpAfter ?? 'n/a'}
 ${evalHint}
-Engine best: ${bestSan || 'same as played / unknown'}
+${winBits ? `${winBits}\n` : ''}Engine best: ${bestSan || 'same as played / unknown'}
+Engine best PV (SAN): ${bestLine || 'n/a'}
+Position before (FEN): ${fenBefore || 'n/a'}
 Position after (FEN): ${fenAfter}
 Recent moves: ${recent}
 ${address}
 
-If the move was good, say why. If it was wrong, name the idea that failed and the better plan in plain words. No em dashes.`;
+Anchor on engine class, eval change, and the best PV. If the move was good, say why from those facts. If wrong, name the failed idea and the better plan from Engine best / PV in plain words. Do not invent tactics absent from FEN or PV. No em dashes.`;
 }
 
 export async function askCoach(prompt, signal) {
@@ -160,9 +178,9 @@ async function callGemini(key, prompt, signal) {
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2048,
-        thinkingConfig: { thinkingLevel: 'MINIMAL' },
+        temperature: 0.25,
+        maxOutputTokens: 8192,
+        thinkingConfig: { thinkingLevel: 'HIGH' },
       },
     }),
     signal,
