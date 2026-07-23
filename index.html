@@ -18,8 +18,6 @@
   <!-- Chess.com-style left rail -->
   <nav class="rail" aria-label="Main">
     <a class="rail-brand" href="./" title="MCR — Magnus Chess Review"><img src="assets/magnus.png" width="40" height="40" alt="MCR"></a>
-    <a class="rail-item active" href="./" title="Review"><span class="rail-ico">✦</span><span class="rail-lbl">Review</span></a>
-    <button class="rail-item" id="rail-new" type="button" title="New game"><span class="rail-ico">＋</span><span class="rail-lbl">New</span></button>
   </nav>
 
   <div class="app-main">
@@ -105,11 +103,23 @@
 
             <div class="controls">
               <button class="ctl" id="ctl-flip" type="button" title="Flip board (f)">⇅</button>
-              <div class="ctl-group">
-                <button class="ctl" id="ctl-first" type="button" title="Start (Home)">⏮</button>
-                <button class="ctl" id="ctl-prev" type="button" title="Back (←)">◀</button>
-                <button class="ctl" id="ctl-next" type="button" title="Forward (→)">▶</button>
-                <button class="ctl" id="ctl-last" type="button" title="End (End)">⏭</button>
+              <div class="ctl-group" role="group" aria-label="Move navigation">
+                <button class="ctl" id="ctl-first" type="button" title="Start (Home)" aria-label="First Move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m6.07 22h-.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93h.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93zm13.86-.87-.07.07c-1.13 1.13-1.6 1.13-2.73 0l-6.4-6.37c-1.73-1.77-1.73-3.9 0-5.67l6.4-6.37c1.13-1.13 1.6-1.13 2.73 0l.07.07c1.13 1.13 1.13 1.6 0 2.73l-6.37 6.4 6.37 6.4c1.13 1.13 1.13 1.6 0 2.73zm0 0"/></svg>
+                </button>
+                <button class="ctl" id="ctl-prev" type="button" title="Back (←)" aria-label="Previous Move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m16.27 21.13-.07.07c-1.13 1.13-1.6 1.13-2.73 0l-6.4-6.37c-1.73-1.77-1.73-3.9 0-5.67l6.4-6.37c1.13-1.13 1.6-1.13 2.73 0l.07.07c1.13 1.13 1.13 1.6 0 2.73l-6.37 6.4 6.37 6.4c1.13 1.13 1.13 1.6 0 2.73zm0 0"/></svg>
+                </button>
+                <button class="ctl" id="ctl-play" type="button" title="Play / Pause (Space)" aria-label="Play / Pause" aria-pressed="false">
+                  <svg class="ctl-ico ctl-ico-play" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m20.5 12.8-12.73 8.73c-1.27.9-1.77.63-1.77-.93v-17.27c0-1.53.5-1.8 1.77-.9l12.73 8.77c.83.57.83 1.03 0 1.6zm0 0"/></svg>
+                  <svg class="ctl-ico ctl-ico-pause" aria-hidden="true" hidden viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m6.93 2h2.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93h-2.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93zm8 0h2.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93h-2.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93z"/></svg>
+                </button>
+                <button class="ctl" id="ctl-next" type="button" title="Forward (→)" aria-label="Next Move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m7.73 2.87.07-.07c1.13-1.13 1.6-1.13 2.73 0l6.4 6.37c1.73 1.77 1.73 3.9 0 5.67l-6.4 6.37c-1.13 1.13-1.6 1.13-2.73 0l-.07-.07c-1.13-1.13-1.13-1.6 0-2.73l6.37-6.4-6.37-6.4c-1.13-1.13-1.13-1.6 0-2.73zm0 0"/></svg>
+                </button>
+                <button class="ctl" id="ctl-last" type="button" title="End (End)" aria-label="Last Move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m17.93 2h.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93h-.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93zm-13.86.87.07-.07c1.13-1.13 1.6-1.13 2.73 0l6.4 6.37c1.73 1.77 1.73 3.9 0 5.67l-6.4 6.37c-1.13 1.13-1.6 1.13-2.73 0l-.07-.07c-1.13-1.13-1.13-1.6 0-2.73l6.37-6.4-6.37-6.4c-1.13-1.13-1.13-1.6 0-2.73zm0 0"/></svg>
+                </button>
               </div>
               <button class="ctl" id="ctl-arrow" type="button" title="Toggle best-move arrow (a)">➔</button>
             </div>
@@ -187,6 +197,8 @@
     </footer>
   </div>
 </div>
+
+<p class="app-version" id="app-version" aria-live="polite"></p>
 
 <script type="module" src="js/app.js"></script>
 </body>

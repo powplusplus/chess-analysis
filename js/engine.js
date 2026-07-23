@@ -1,50 +1,138 @@
-// UCI wrapper around Stockfish 18 web workers (nmrugg), plus a small pool.
-// Mode picks engine build: asm (fast), lite (balanced), full single (deep).
+// UCI wrapper around Stockfish 18 web workers (nmrugg), plus a pool.
+// Mode picks build. With COOP/COEP + /sf proxy → multi-thread WASM.
+// Else single-thread CDN/blob fallback. Pool parallelizes positions.
 
 const MULTIPV = 2;
-const SF_BASE = 'https://unpkg.com/stockfish@18.0.0/src';
+const SF_VER = '18.0.0';
+const SF_CDN = `https://unpkg.com/stockfish@${SF_VER}/src`;
+const SF_LOCAL = '/sf';
 
 /** @typedef {'fast'|'balanced'|'deep'} EngineMode */
 
 /** @type {Record<EngineMode, {
  *   depth: number,
- *   js: string,
- *   wasm: string|null,
  *   hash: number,
- *   pool: number,
+ *   poolMax: number,
  *   label: string,
+ *   mt: { file: string, wasm: string }|null,
+ *   st: { file: string, wasm: string|null },
  * }>} */
 export const ENGINE_MODES = {
   fast: {
     depth: 10,
-    js: `${SF_BASE}/stockfish-18-asm.js`,
-    wasm: null,
     hash: 16,
-    pool: 2,
+    poolMax: 4,
     label: 'Stockfish 18 asm',
+    mt: null,
+    st: { file: 'stockfish-18-asm.js', wasm: null },
   },
   balanced: {
     depth: 12,
-    js: `${SF_BASE}/stockfish-18-lite-single.js`,
-    wasm: `${SF_BASE}/stockfish-18-lite-single.wasm`,
-    hash: 32,
-    pool: 2,
+    hash: 64,
+    poolMax: 4,
     label: 'Stockfish 18 Lite',
+    mt: { file: 'stockfish-18-lite.js', wasm: 'stockfish-18-lite.wasm' },
+    st: { file: 'stockfish-18-lite-single.js', wasm: 'stockfish-18-lite-single.wasm' },
   },
   deep: {
     depth: 16,
-    js: `${SF_BASE}/stockfish-18-single.js`,
-    wasm: `${SF_BASE}/stockfish-18-single.wasm`,
-    hash: 64,
-    pool: 1,
+    hash: 128,
+    poolMax: 2,
     label: 'Stockfish 18',
+    mt: { file: 'stockfish-18.js', wasm: 'stockfish-18.wasm' },
+    st: { file: 'stockfish-18-single.js', wasm: 'stockfish-18-single.wasm' },
   },
 };
 
-const CACHE_NAME = 'stockfish-18.0.0';
-const prefetchCache = new Map(); // urls-key -> Promise
-/** @type {Map<string, string>} CDN url -> blob: URL (session) */
+const CACHE_NAME = `stockfish-${SF_VER}`;
+const prefetchCache = new Map(); // key -> Promise
+/** @type {Map<string, string>} CDN/local url -> blob: URL (session) */
 const blobUrls = new Map();
+
+/** @type {boolean|null} */
+let sameOriginSf = null;
+
+export function canUseThreads() {
+  try {
+    if (!globalThis.crossOriginIsolated) return false;
+    if (typeof SharedArrayBuffer !== 'function') return false;
+    if (typeof Atomics !== 'object') return false;
+    const m = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    return m.buffer instanceof SharedArrayBuffer;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function probeSameOriginSf() {
+  if (sameOriginSf != null) return sameOriginSf;
+  try {
+    const r = await fetch(`${SF_LOCAL}/stockfish-18-lite-single.js`, {
+      method: 'HEAD',
+      cache: 'force-cache',
+    });
+    sameOriginSf = r.ok;
+  } catch (_) {
+    sameOriginSf = false;
+  }
+  return sameOriginSf;
+}
+
+function assetUrl(file, sameOrigin) {
+  return sameOrigin ? `${SF_LOCAL}/${file}` : `${SF_CDN}/${file}`;
+}
+
+/**
+ * Resolve concrete build + pool/threads for this browser.
+ * @param {EngineMode} mode
+ * @returns {Promise<{
+ *   mode: EngineMode,
+ *   depth: number,
+ *   hash: number,
+ *   pool: number,
+ *   threads: number,
+ *   js: string,
+ *   wasm: string|null,
+ *   label: string,
+ *   sameOrigin: boolean,
+ *   multiThread: boolean,
+ * }>}
+ */
+export async function resolveEngineConfig(mode) {
+  const base = ENGINE_MODES[mode] || ENGINE_MODES.balanced;
+  const sameOrigin = await probeSameOriginSf();
+  const wantMt = !!(base.mt && canUseThreads() && sameOrigin);
+  const build = wantMt ? base.mt : base.st;
+  const hw = navigator.hardwareConcurrency || 4;
+  const cores = Math.max(1, hw - 1); // leave 1 for UI
+
+  let pool;
+  let threads;
+  if (wantMt) {
+    // Game review = many FENs → prefer parallel engines with a few threads each.
+    pool = Math.max(1, Math.min(base.poolMax, Math.max(1, Math.floor(cores / 2)), 4));
+    threads = Math.max(1, Math.min(4, Math.floor(cores / pool)));
+  } else {
+    pool = Math.max(1, Math.min(base.poolMax, cores, 4));
+    threads = 1;
+  }
+
+  const js = assetUrl(build.file, sameOrigin);
+  const wasm = build.wasm ? assetUrl(build.wasm, sameOrigin) : null;
+  const tag = wantMt ? `${threads}× thr` : '1 thr';
+  return {
+    mode: ENGINE_MODES[mode] ? mode : 'balanced',
+    depth: base.depth,
+    hash: base.hash,
+    pool,
+    threads,
+    js,
+    wasm,
+    label: `${base.label} (${pool} eng, ${tag})`,
+    sameOrigin,
+    multiThread: wantMt,
+  };
+}
 
 function mimeFor(url) {
   return url.endsWith('.wasm') ? 'application/wasm' : 'application/javascript';
@@ -114,18 +202,22 @@ async function loadAsset(url, onProgress) {
   return { buf, fromCache: false };
 }
 
-/** Prefetch JS (+ WASM) into Cache API + blob URLs; reports {loaded,total,pct,label,fromCache}. */
+/** Prefetch JS (+ WASM); reports {loaded,total,pct,label,fromCache}. Returns resolved cfg. */
 export function prefetchEngine(mode, onProgress) {
-  const cfg = ENGINE_MODES[mode] || ENGINE_MODES.balanced;
-  const urls = cfg.wasm ? [cfg.js, cfg.wasm] : [cfg.js];
-  const key = urls.join('|');
+  const key = mode;
   if (prefetchCache.has(key)) return prefetchCache.get(key);
 
   const promise = (async () => {
-    // Already have session blobs → instant
-    if (urls.every(u => blobUrls.has(u))) {
+    const cfg = await resolveEngineConfig(mode);
+    const urls = cfg.wasm ? [cfg.js, cfg.wasm] : [cfg.js];
+
+    // Same-origin MT: browser HTTP cache enough; still warm + progress.
+    // Single-thread cross-origin: also need blob URLs for Worker.
+    const needBlobs = !cfg.sameOrigin || !cfg.multiThread;
+
+    if (needBlobs && urls.every(u => blobUrls.has(u))) {
       onProgress?.({ loaded: 1, total: 1, pct: 100, label: cfg.label, fromCache: true });
-      return;
+      return cfg;
     }
 
     const sizes = urls.map(() => 0);
@@ -144,8 +236,7 @@ export function prefetchEngine(mode, onProgress) {
     };
 
     await Promise.all(urls.map(async (url, i) => {
-      if (blobUrls.has(url)) {
-        // Unknown size for cached blob — treat as done for this slot
+      if (needBlobs && blobUrls.has(url)) {
         loadedArr[i] = 1;
         sizes[i] = 1;
         known[i] = true;
@@ -159,7 +250,7 @@ export function prefetchEngine(mode, onProgress) {
       });
       if (!fromCache) anyNetwork = true;
       if (!known[i]) { sizes[i] = buf.byteLength; known[i] = true; loadedArr[i] = buf.byteLength; }
-      ensureBlobUrl(url, buf);
+      if (needBlobs) ensureBlobUrl(url, buf);
       report();
     }));
 
@@ -170,6 +261,7 @@ export function prefetchEngine(mode, onProgress) {
       label: cfg.label,
       fromCache: !anyNetwork,
     });
+    return cfg;
   })().catch(err => {
     prefetchCache.delete(key);
     throw err;
@@ -179,16 +271,42 @@ export function prefetchEngine(mode, onProgress) {
   return promise;
 }
 
-/** Same-origin worker URL. Blob (or CDN) script via ?js=; WASM via hash (SF bootstrap). */
+/** Absolute URL for wasm hash (SF bootstrap). */
+function absUrl(url) {
+  return new URL(url, location.href).href;
+}
+
+/**
+ * MT same-origin: Worker = SF JS itself (pthread spawns same script).
+ * ST: same-origin shell or cross-origin blob via sf-worker.js.
+ */
 function workerUrlFor(cfg) {
+  if (cfg.multiThread && cfg.sameOrigin) {
+    const u = new URL(cfg.js, location.href);
+    if (cfg.wasm) u.hash = encodeURIComponent(absUrl(cfg.wasm));
+    return u;
+  }
+
+  const jsUrl = cfg.sameOrigin ? absUrl(cfg.js) : (blobUrls.get(cfg.js) || cfg.js);
+  const wasmUrl = cfg.wasm
+    ? (cfg.sameOrigin ? absUrl(cfg.wasm) : (blobUrls.get(cfg.wasm) || cfg.wasm))
+    : null;
+
+  if (cfg.sameOrigin && !cfg.multiThread) {
+    // Same-origin single: SF as worker directly (no shell).
+    const u = new URL(cfg.js, location.href);
+    if (wasmUrl) u.hash = encodeURIComponent(wasmUrl);
+    return u;
+  }
+
   const u = new URL('./sf-worker.js', import.meta.url);
-  u.searchParams.set('js', blobUrls.get(cfg.js) || cfg.js);
-  if (cfg.wasm) u.hash = encodeURIComponent(blobUrls.get(cfg.wasm) || cfg.wasm);
+  u.searchParams.set('js', jsUrl);
+  if (wasmUrl) u.hash = encodeURIComponent(wasmUrl);
   return u;
 }
 
 class Engine {
-  /** @param {typeof ENGINE_MODES[EngineMode]} cfg */
+  /** @param {Awaited<ReturnType<typeof resolveEngineConfig>>} cfg */
   constructor(cfg) {
     this.cfg = cfg;
     this.worker = new Worker(workerUrlFor(cfg));
@@ -228,6 +346,9 @@ class Engine {
     this._booted = true;
     this.send('setoption name MultiPV value ' + MULTIPV);
     this.send('setoption name Hash value ' + this.cfg.hash);
+    if (this.cfg.multiThread && this.cfg.threads > 1) {
+      this.send('setoption name Threads value ' + this.cfg.threads);
+    }
     this.send('isready');
   }
 
@@ -280,7 +401,6 @@ class Engine {
         return;
       }
       this.pending = { resolve, lines: {} };
-      this.send('stop');
       this.send('position fen ' + fen);
       this.send('go depth ' + depth);
     });
@@ -311,12 +431,11 @@ function parseInfo(line) {
 }
 
 export class EnginePool {
-  /** @param {EngineMode} mode */
-  constructor(mode) {
-    const cfg = ENGINE_MODES[mode] || ENGINE_MODES.balanced;
+  /** @param {Awaited<ReturnType<typeof resolveEngineConfig>>} cfg */
+  constructor(cfg) {
     this.cfg = cfg;
-    const hw = navigator.hardwareConcurrency || 4;
-    this.size = Math.max(1, Math.min(cfg.pool, Math.max(1, hw - 1), 3));
+    this.mode = cfg.mode;
+    this.size = cfg.pool;
     this.engines = [];
     this.free = [];
     this.queue = [];

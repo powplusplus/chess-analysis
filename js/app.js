@@ -9,8 +9,11 @@ import {
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
 import { playMoveSound, prefetchSounds } from './sounds.js';
+import { synthesizeCoachSpeech } from './tts.js';
+import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
+const VERSION_STORE = 'mcr-version';
 const FILES = 'abcdefgh';
 const ANIM_MS = 160;
 
@@ -24,6 +27,7 @@ const state = {
   showArrow: true,
   meta: null,
   pool: null,
+  poolMode: null,
   running: false,
   talliesExpanded: false,
   tallyCursor: {},  // key -> move index last jumped to
@@ -35,10 +39,14 @@ const state = {
   coachBusy: false,
   coachTargetKey: null,
   coachSpeakId: 0,
+  coachAudio: null,     // HTMLAudioElement for neural TTS
+  coachTtsAbort: null,
   user: null,           // chess.com username for current games list
   games: [],            // raw games from last fetch
   gameId: null,         // chess.com game id when reviewing
   pgnLocal: false,      // reviewing a pasted PGN
+  autoplay: false,
+  autoplayTimer: null,
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -206,7 +214,6 @@ async function applyRoute() {
 }
 
 $('btn-new').onclick = goHome;
-$('rail-new').onclick = goHome;
 $('btn-back-search').onclick = () => goHome();
 
 $('form-user').onsubmit = async e => {
@@ -867,32 +874,133 @@ async function goto(ply, opts = {}) {
 function renderAll() {
   renderBoard(); renderPlayers(); renderEvalBar();
   renderMoves(); renderDetail(); renderReport(); renderGraph();
+  syncNavControls();
   syncCoachUi();
+}
+
+function syncNavControls() {
+  const atStart = state.ply <= 0;
+  const atEnd = state.ply >= state.moves.length;
+  const setDis = (id, on) => {
+    const el = $(id);
+    if (!el) return;
+    el.disabled = on;
+    el.classList.toggle('ctl-disabled', on);
+  };
+  setDis('ctl-first', atStart);
+  setDis('ctl-prev', atStart);
+  setDis('ctl-next', atEnd);
+  setDis('ctl-last', atEnd);
+  if (state.autoplay && atEnd) stopAutoplay();
+}
+
+function setPlayIcon(playing) {
+  const btn = $('ctl-play');
+  if (!btn) return;
+  const playIco = btn.querySelector('.ctl-ico-play');
+  const pauseIco = btn.querySelector('.ctl-ico-pause');
+  if (playIco) playIco.hidden = playing;
+  if (pauseIco) pauseIco.hidden = !playing;
+  btn.classList.toggle('playing', playing);
+  btn.setAttribute('aria-pressed', playing ? 'true' : 'false');
+  btn.setAttribute('aria-label', playing ? 'Pause' : 'Play / Pause');
+}
+
+function stopAutoplay() {
+  state.autoplay = false;
+  if (state.autoplayTimer) {
+    clearInterval(state.autoplayTimer);
+    state.autoplayTimer = null;
+  }
+  setPlayIcon(false);
+}
+
+function startAutoplay() {
+  if (!state.moves.length) return;
+  if (state.ply >= state.moves.length) goto(0, { animate: false, sound: false });
+  state.autoplay = true;
+  setPlayIcon(true);
+  if (state.autoplayTimer) clearInterval(state.autoplayTimer);
+  state.autoplayTimer = setInterval(() => {
+    if (!state.autoplay || state.animating) return;
+    if (state.ply >= state.moves.length) { stopAutoplay(); return; }
+    goto(state.ply + 1);
+  }, 900);
+}
+
+function toggleAutoplay() {
+  if (state.autoplay) stopAutoplay();
+  else startAutoplay();
 }
 
 /* ─────────────────── coach overview ─────────────────── */
 function stopCoachSpeech() {
   state.coachSpeakId++;
+  if (state.coachTtsAbort) {
+    try { state.coachTtsAbort.abort(); } catch { /* ignore */ }
+    state.coachTtsAbort = null;
+  }
+  if (state.coachAudio) {
+    try {
+      state.coachAudio.pause();
+      state.coachAudio.removeAttribute('src');
+      state.coachAudio.load();
+    } catch { /* ignore */ }
+    state.coachAudio = null;
+  }
   try {
     if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
   } catch { /* ignore */ }
 }
 
-function speakCoach(text) {
-  stopCoachSpeech();
-  const spoken = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!spoken || typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
-    return;
-  }
-  const id = state.coachSpeakId;
+function speakCoachBrowser(spoken, id) {
+  if (typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') return;
   const u = new SpeechSynthesisUtterance(spoken);
-  u.rate = 1.02;
-  u.pitch = 1;
-  // Chrome often drops speak() if it follows cancel() in the same tick.
+  u.rate = 0.96;
+  u.pitch = 0.92;
+  // Prefer a deeper en voice if available (still a fallback).
+  try {
+    const voices = speechSynthesis.getVoices() || [];
+    const pick = voices.find(v => /en(-|_)?(GB|US|AU)/i.test(v.lang) && /male|daniel|george|alex|david|fred/i.test(v.name))
+      || voices.find(v => /^en/i.test(v.lang));
+    if (pick) u.voice = pick;
+  } catch { /* ignore */ }
   setTimeout(() => {
     if (id !== state.coachSpeakId) return;
     try { speechSynthesis.speak(u); } catch { /* ignore */ }
   }, 40);
+}
+
+async function speakCoach(text) {
+  stopCoachSpeech();
+  const spoken = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!spoken) return;
+  const id = state.coachSpeakId;
+  const ac = new AbortController();
+  state.coachTtsAbort = ac;
+
+  try {
+    const blob = await synthesizeCoachSpeech(spoken, ac.signal);
+    if (id !== state.coachSpeakId) return;
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    state.coachAudio = audio;
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      if (state.coachAudio === audio) state.coachAudio = null;
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      if (state.coachAudio === audio) state.coachAudio = null;
+    };
+    await audio.play();
+  } catch (ex) {
+    if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
+    // Neural TTS unavailable → last-resort browser voice
+    speakCoachBrowser(spoken, id);
+  } finally {
+    if (state.coachTtsAbort === ac) state.coachTtsAbort = null;
+  }
 }
 
 function setCoachPlaceholder(msg, isErr = false) {
@@ -935,8 +1043,12 @@ function coachSubtitle() {
 }
 
 function meSide() {
-  if (!state.meta || state.meta.meIsWhite == null) return null;
-  return state.meta.meIsWhite ? 'w' : 'b';
+  // Prefer Chess.com seat when known; else side at bottom of board.
+  if (state.meta && state.meta.meIsWhite != null) {
+    return state.meta.meIsWhite ? 'w' : 'b';
+  }
+  if (!state.moves.length) return null;
+  return state.flipped ? 'b' : 'w';
 }
 
 function analysisReady() {
@@ -1120,10 +1232,11 @@ function makeMovePrompt() {
   });
 }
 
-$('ctl-first').onclick = () => goto(0, { animate: false });
-$('ctl-prev').onclick = () => goto(state.ply - 1);
-$('ctl-next').onclick = () => goto(state.ply + 1);
-$('ctl-last').onclick = () => goto(state.moves.length, { animate: false });
+$('ctl-first').onclick = () => { stopAutoplay(); goto(0, { animate: false }); };
+$('ctl-prev').onclick = () => { stopAutoplay(); goto(state.ply - 1); };
+$('ctl-play').onclick = () => toggleAutoplay();
+$('ctl-next').onclick = () => { stopAutoplay(); goto(state.ply + 1); };
+$('ctl-last').onclick = () => { stopAutoplay(); goto(state.moves.length, { animate: false }); };
 $('ctl-flip').onclick = () => { state.flipped = !state.flipped; renderAll(); };
 $('ctl-arrow').onclick = e => { state.showArrow = !state.showArrow; e.currentTarget.classList.toggle('on', state.showArrow); renderBoard(); };
 $('ctl-arrow').classList.add('on');
@@ -1131,10 +1244,11 @@ $('ctl-arrow').classList.add('on');
 document.addEventListener('keydown', e => {
   if ($('screen-review').hidden) return;
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-  if (e.key === 'ArrowLeft') { goto(state.ply - 1); e.preventDefault(); }
-  else if (e.key === 'ArrowRight') { goto(state.ply + 1); e.preventDefault(); }
-  else if (e.key === 'Home') goto(0, { animate: false });
-  else if (e.key === 'End') goto(state.moves.length, { animate: false });
+  if (e.key === 'ArrowLeft') { stopAutoplay(); goto(state.ply - 1); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { stopAutoplay(); goto(state.ply + 1); e.preventDefault(); }
+  else if (e.key === 'Home') { stopAutoplay(); goto(0, { animate: false }); }
+  else if (e.key === 'End') { stopAutoplay(); goto(state.moves.length, { animate: false }); }
+  else if (e.key === ' ' || e.code === 'Space') { toggleAutoplay(); e.preventDefault(); }
   else if (e.key === 'f') { state.flipped = !state.flipped; renderAll(); }
   else if (e.key === 'a') $('ctl-arrow').click();
 });
@@ -1157,9 +1271,14 @@ function restoreEngineMode() {
 
 $('depth-select').onchange = () => {
   try { localStorage.setItem(MODE_KEY, getEngineMode()); } catch (_) {}
+  if (state.pool) { try { state.pool.destroy(); } catch (_) {} state.pool = null; state.poolMode = null; }
   if (state.moves.length) runAnalysis();
 };
 restoreEngineMode();
+// Warm engine download while idle (COI + /sf → multi-thread path)
+const warmMode = () => { prefetchEngine(getEngineMode()).catch(() => {}); };
+if (typeof requestIdleCallback === 'function') requestIdleCallback(warmMode, { timeout: 4000 });
+else setTimeout(warmMode, 1200);
 
 /* ─────────────────── sidebar tabs ─────────────────── */
 function setSideTab(name) {
@@ -1182,7 +1301,7 @@ $('tab-moves').onclick = () => setSideTab('moves');
 function stopAnalysis() {
   state.running = false;
   state.analysisToken++;
-  if (state.pool) { state.pool.destroy(); state.pool = null; }
+  if (state.pool) { state.pool.destroy(); state.pool = null; state.poolMode = null; }
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
@@ -1190,11 +1309,20 @@ function stopAnalysis() {
 }
 
 async function runAnalysis() {
-  stopAnalysis();
-  const token = state.analysisToken;
   const mode = getEngineMode();
-  const cfg = ENGINE_MODES[mode];
-  const depth = cfg.depth;
+  const reusePool = state.pool && state.poolMode === mode && !state.running;
+  if (state.pool && !reusePool) {
+    try { state.pool.destroy(); } catch (_) {}
+    state.pool = null;
+    state.poolMode = null;
+  }
+  if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
+  state.coachBusy = false;
+  state.coachTargetKey = null;
+  stopCoachSpeech();
+  state.running = false;
+  const token = ++state.analysisToken;
+
   const n = state.moves.length;
   if (!n) return;
   state.evals = new Array(n + 1).fill(null);
@@ -1207,19 +1335,20 @@ async function runAnalysis() {
   $('report').hidden = true;
   $('tally-more').hidden = true;
   fill.style.width = '0%';
-  text.textContent = `Loading ${cfg.label}…`;
+  text.textContent = `Loading ${ENGINE_MODES[mode].label}…`;
   renderGraph();
   renderMoves();
   renderDetail();
 
+  let cfg;
   try {
-    await prefetchEngine(mode, ({ pct, label, fromCache }) => {
+    cfg = await prefetchEngine(mode, ({ pct, label, fromCache }) => {
       if (token !== state.analysisToken) return;
       fill.style.width = Math.max(2, Math.round(pct * 0.35)) + '%';
       const verb = fromCache ? 'Loading' : 'Downloading';
       text.textContent = pct >= 100
-        ? `Starting ${label || cfg.label}…`
-        : `${verb} ${label || cfg.label}… ${pct}%`;
+        ? `Starting ${label || ENGINE_MODES[mode].label}…`
+        : `${verb} ${label || ENGINE_MODES[mode].label}… ${pct}%`;
     });
   } catch (ex) {
     if (token !== state.analysisToken) return;
@@ -1230,14 +1359,18 @@ async function runAnalysis() {
   }
   if (token !== state.analysisToken || !state.running) return;
 
+  const depth = cfg.depth;
   fill.style.width = '40%';
   text.textContent = `Starting ${cfg.label}…`;
 
-  let pool;
+  let pool = reusePool ? state.pool : null;
   try {
-    pool = new EnginePool(mode);
-    state.pool = pool;
-    await pool.warmUp();
+    if (!pool) {
+      pool = new EnginePool(cfg);
+      state.pool = pool;
+      state.poolMode = mode;
+      await pool.warmUp();
+    }
   } catch (ex) {
     if (token !== state.analysisToken) return;
     console.error('Engine start failed', ex);
@@ -1246,6 +1379,7 @@ async function runAnalysis() {
     state.running = false;
     if (pool) { try { pool.destroy(); } catch (_) {} }
     state.pool = null;
+    state.poolMode = null;
     return;
   }
   if (token !== state.analysisToken || !state.running) return;
@@ -1305,8 +1439,7 @@ async function runAnalysis() {
   state.running = false;
   prog.hidden = true;
   renderAll();
-  pool.destroy();
-  state.pool = null;
+  // Keep pool warm for next game / mode re-run
 }
 
 function buildReport(idx, before, after) {
@@ -1333,7 +1466,28 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+/* ─────────────────── app version badge ─────────────────── */
+function initVersion() {
+  const el = $('app-version');
+  if (!el) return;
+  const label = `v${APP_VERSION}`;
+  let prev = null;
+  try { prev = localStorage.getItem(VERSION_STORE); } catch { /* private mode */ }
+  if (prev && prev !== APP_VERSION) {
+    el.textContent = `Updated · ${label}`;
+    el.classList.add('app-version-new');
+    setTimeout(() => {
+      el.textContent = label;
+      el.classList.remove('app-version-new');
+    }, 4500);
+  } else {
+    el.textContent = label;
+  }
+  try { localStorage.setItem(VERSION_STORE, APP_VERSION); } catch { /* ignore */ }
+}
+
 // deep-link + browser back/forward
 window.addEventListener('popstate', () => { applyRoute(); });
 prefetchSounds();
+initVersion();
 applyRoute();

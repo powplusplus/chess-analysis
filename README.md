@@ -11,10 +11,13 @@ Coach Overview uses Gemma 4 31B (thinking) via the Google Generative Language AP
 
 ## Run it locally
 
-ES modules and Web Workers need a real server (not `file://`):
+ES modules and Web Workers need a real server (not `file://`). Prefer
+`serve.py` so COOP/COEP headers enable multi-thread Stockfish:
 
-    python3 -m http.server 8000
+    python3 serve.py
     # then open http://localhost:8000
+
+Plain `python3 -m http.server 8000` still works (single-thread fallback).
 
 For Coach Overview on a static server, copy the example config and paste your key:
 
@@ -73,13 +76,17 @@ lands near 900 and ~90% near 1750.
 Sidebar mode (persisted in `localStorage`):
 
 * **Fast** - Stockfish 18 asm.js, depth 10 (~10MB, weakest / broadest compat)
-* **Balanced** - Stockfish 18 Lite single-thread WASM, depth 12 (~7MB)
-* **Deep** - Stockfish 18 full single-thread WASM, depth 16 (~110MB NNUE)
+* **Balanced** - Stockfish 18 Lite WASM, depth 12 (~7MB)
+* **Deep** - Stockfish 18 full WASM, depth 16 (~110MB NNUE)
+
+With cross-origin isolation (Vercel / `serve.py`), Balanced and Deep use the
+multi-thread builds and a pool of engines (positions in parallel). Without it,
+single-thread builds still pool across positions. Engine stays warm between games.
 
 ## Credits
 
 Stockfish is GPLv3; this app loads Nathan Rugg's Stockfish.js 18 builds from
-unpkg and does not redistribute them. Move generation is chess.js (BSD). Board
+unpkg (proxied as `/sf` when isolated) and does not redistribute them. Move generation is chess.js (BSD). Board
 colours match Chess.com's green theme. Piece artwork under `pieces/neo/` is
 Chess.com's default Neo set, cached locally for offline use. Layout and analysis
 code here are original - this is not affiliated with Chess.com.

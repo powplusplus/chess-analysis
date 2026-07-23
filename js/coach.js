@@ -75,21 +75,42 @@ export function buildMovePrompt(ctx) {
   } = ctx;
 
   const mover = color === 'w' ? 'White' : 'Black';
-  const youMoved = (meSide === 'w' && color === 'w') || (meSide === 'b' && color === 'b');
-  const address = youMoved
-    ? `You played ${san} as ${mover}.`
-    : `${mover} played ${san}. Talk about what this means for the player reviewing.`;
+  const seat = meSide === 'w' ? 'White' : meSide === 'b' ? 'Black' : null;
+  const youName = meSide === 'w' ? white : meSide === 'b' ? black : null;
+  const oppName = meSide === 'w' ? black : meSide === 'b' ? white : null;
+  const youMoved = seat && ((meSide === 'w' && color === 'w') || (meSide === 'b' && color === 'b'));
+
+  const seatBlock = seat
+    ? `Reviewer seat: ${seat} (${youName}). Opponent: ${oppName} (${seat === 'White' ? 'Black' : 'White'}).
+Address the reviewer as "you". Coach from THEIR seat only. Do not write a neutral both-sides report.`
+    : `White is ${white}. Black is ${black}.
+No reviewer seat known. Keep the note balanced.`;
+
+  const address = !seat
+    ? `${mover} played ${san}.`
+    : youMoved
+      ? `You (${seat}) played ${san}. This is YOUR move. Judge it for you.`
+      : `Opponent (${mover}) played ${san}. Explain what this does to YOU (${seat}) and how you should respond.`;
+
+  const evalHint = seat
+    ? `Evals are White-centric (positive = White better). You are ${seat}, so read them from your seat.`
+    : `Evals are White-centric (positive = White better).`;
+
+  const task = seat
+    ? `Task: Move analysis for the player who had ${seat}. A move is selected. Explain what went right or wrong for THEM, and what THEY should take from it.`
+    : `Task: Move analysis. A move is selected. Explain what went right or wrong on this move, and what to take from it.`;
 
   return `${STYLE}
 
-Task: Move analysis. A move is selected. Explain what went right or wrong on this move, and what to take from it.
+${task}
 
-Players: White ${white}, Black ${black}
+${seatBlock}
 Opening: ${opening || 'unknown'}
 Move ${moveNum} (ply ${ply}): ${san} by ${mover}
 Engine class: ${cls || 'unknown'}
 Eval before (White cp): ${cpBefore ?? 'n/a'}
 Eval after (White cp): ${cpAfter ?? 'n/a'}
+${evalHint}
 Engine best: ${bestSan || 'same as played / unknown'}
 Position after (FEN): ${fenAfter}
 Recent moves: ${recent}
