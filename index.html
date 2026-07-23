@@ -35,9 +35,9 @@
     <!-- ───────────────── search ───────────────── -->
     <main class="screen screen-search" id="screen-search">
       <div class="hero">
-        <div class="hero-badge">Free · runs in your browser</div>
+        <div class="hero-badge">Local Stockfish analysis</div>
         <h1>Game Review</h1>
-        <p class="hero-sub">Type a Chess.com username. Pick a game. Stockfish runs locally, nothing uploaded.</p>
+        <p class="hero-sub">Enter a Chess.com username or paste a PGN. Analysis runs in-browser.</p>
 
         <form class="search-row" id="form-user">
           <input id="input-user" class="input" type="text" placeholder="Chess.com username" autocomplete="username" spellcheck="false" required>
@@ -120,10 +120,10 @@
         <div class="sidebar-head">
           <span class="sidebar-icon">✦</span>
           <h2>Game Review</h2>
-          <select id="depth-select" class="depth-select" title="Engine depth">
-            <option value="10">Fast</option>
-            <option value="12" selected>Balanced</option>
-            <option value="15">Deep</option>
+          <select id="depth-select" class="depth-select" title="Engine mode">
+            <option value="fast">Fast</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="deep">Deep</option>
           </select>
         </div>
 

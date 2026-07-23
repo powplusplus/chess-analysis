@@ -1,5 +1,5 @@
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
-import { EnginePool, prefetchStockfish } from './engine.js';
+import { EnginePool, prefetchEngine, ENGINE_MODES } from './engine.js';
 import { icon, colorOf, labelOf } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
 import { fetchRecentGames, summarise } from './chesscom.js';
@@ -826,7 +826,25 @@ document.addEventListener('keydown', e => {
 
 window.addEventListener('resize', () => { if (!$('screen-review').hidden) renderGraph(); });
 
-$('depth-select').onchange = () => { if (state.moves.length) runAnalysis(); };
+const MODE_KEY = 'engine-mode';
+
+function getEngineMode() {
+  const v = $('depth-select').value;
+  return ENGINE_MODES[v] ? v : 'balanced';
+}
+
+function restoreEngineMode() {
+  try {
+    const saved = localStorage.getItem(MODE_KEY);
+    if (saved && ENGINE_MODES[saved]) $('depth-select').value = saved;
+  } catch (_) {}
+}
+
+$('depth-select').onchange = () => {
+  try { localStorage.setItem(MODE_KEY, getEngineMode()); } catch (_) {}
+  if (state.moves.length) runAnalysis();
+};
+restoreEngineMode();
 
 /* ─────────────────── sidebar tabs ─────────────────── */
 function setSideTab(name) {
@@ -858,7 +876,9 @@ function stopAnalysis() {
 async function runAnalysis() {
   stopAnalysis();
   const token = state.analysisToken;
-  const depth = parseInt($('depth-select').value, 10);
+  const mode = getEngineMode();
+  const cfg = ENGINE_MODES[mode];
+  const depth = cfg.depth;
   const n = state.moves.length;
   if (!n) return;
   state.evals = new Array(n + 1).fill(null);
@@ -871,20 +891,22 @@ async function runAnalysis() {
   $('report').hidden = true;
   $('tally-more').hidden = true;
   fill.style.width = '0%';
-  text.textContent = 'Downloading Stockfish…';
+  text.textContent = `Downloading ${cfg.label}…`;
   renderGraph();
   renderMoves();
   renderDetail();
 
   try {
-    await prefetchStockfish(({ pct }) => {
+    await prefetchEngine(mode, ({ pct, label }) => {
       if (token !== state.analysisToken) return;
       fill.style.width = Math.max(2, Math.round(pct * 0.35)) + '%';
-      text.textContent = pct >= 100 ? 'Starting Stockfish…' : `Downloading Stockfish… ${pct}%`;
+      text.textContent = pct >= 100
+        ? `Starting ${label || cfg.label}…`
+        : `Downloading ${label || cfg.label}… ${pct}%`;
     });
   } catch (ex) {
     if (token !== state.analysisToken) return;
-    text.textContent = 'Could not download Stockfish. Check your connection and retry.';
+    text.textContent = 'Could not download engine. Check your connection and retry.';
     fill.style.width = '0%';
     state.running = false;
     return;
@@ -892,16 +914,16 @@ async function runAnalysis() {
   if (token !== state.analysisToken || !state.running) return;
 
   fill.style.width = '40%';
-  text.textContent = 'Starting Stockfish…';
+  text.textContent = `Starting ${cfg.label}…`;
 
   let pool;
   try {
-    pool = new EnginePool(2);
+    pool = new EnginePool(mode);
     state.pool = pool;
     await pool.warmUp();
   } catch (ex) {
     if (token !== state.analysisToken) return;
-    text.textContent = 'Engine failed to start. Try changing depth or reload.';
+    text.textContent = 'Engine failed to start. Try another mode or reload.';
     fill.style.width = '0%';
     state.running = false;
     return;

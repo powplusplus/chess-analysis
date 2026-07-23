@@ -1,21 +1,55 @@
-// UCI wrapper around a Stockfish web worker, plus a small pool so several
-// positions can be crunched at once.
+// UCI wrapper around Stockfish 18 web workers (nmrugg), plus a small pool.
+// Mode picks engine build: asm (fast), lite (balanced), full single (deep).
 
 const MULTIPV = 2;
-const SF_URL = 'https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.js';
+const SF_BASE = 'https://unpkg.com/stockfish@18.0.0/src';
 
-let prefetchPromise = null;
+/** @typedef {'fast'|'balanced'|'deep'} EngineMode */
 
-/** Download Stockfish into the HTTP cache; reports {loaded,total,pct}. */
-export function prefetchStockfish(onProgress) {
-  if (prefetchPromise) return prefetchPromise;
-  prefetchPromise = (async () => {
-    const res = await fetch(SF_URL);
-    if (!res.ok) throw new Error('Stockfish download failed (' + res.status + ')');
+/** @type {Record<EngineMode, {
+ *   depth: number,
+ *   js: string,
+ *   wasm: string|null,
+ *   hash: number,
+ *   pool: number,
+ *   label: string,
+ * }>} */
+export const ENGINE_MODES = {
+  fast: {
+    depth: 10,
+    js: `${SF_BASE}/stockfish-18-asm.js`,
+    wasm: null,
+    hash: 16,
+    pool: 2,
+    label: 'Stockfish 18 asm',
+  },
+  balanced: {
+    depth: 12,
+    js: `${SF_BASE}/stockfish-18-lite-single.js`,
+    wasm: `${SF_BASE}/stockfish-18-lite-single.wasm`,
+    hash: 32,
+    pool: 2,
+    label: 'Stockfish 18 Lite',
+  },
+  deep: {
+    depth: 16,
+    js: `${SF_BASE}/stockfish-18-single.js`,
+    wasm: `${SF_BASE}/stockfish-18-single.wasm`,
+    hash: 64,
+    pool: 1,
+    label: 'Stockfish 18',
+  },
+};
+
+const prefetchCache = new Map(); // url -> Promise
+
+function fetchWithProgress(url, onProgress) {
+  return fetch(url).then(async res => {
+    if (!res.ok) throw new Error('Engine download failed (' + res.status + ') for ' + url);
     const total = Number(res.headers.get('content-length')) || 0;
     if (!res.body || !res.body.getReader) {
       await res.arrayBuffer();
-      onProgress?.({ loaded: total || 1, total: total || 1, pct: 100 });
+      onProgress?.(total || 1, total || 1);
       return;
     }
     const reader = res.body.getReader();
@@ -24,20 +58,62 @@ export function prefetchStockfish(onProgress) {
       const { done, value } = await reader.read();
       if (done) break;
       loaded += value.byteLength;
-      const pct = total ? Math.min(99, Math.round((loaded / total) * 100)) : Math.min(90, Math.round(loaded / 30000));
-      onProgress?.({ loaded, total, pct });
+      onProgress?.(loaded, total);
     }
-    onProgress?.({ loaded: total || loaded, total: total || loaded, pct: 100 });
+    onProgress?.(total || loaded, total || loaded);
+  });
+}
+
+/** Prefetch JS (+ WASM) into HTTP cache; reports {loaded,total,pct,label}. */
+export function prefetchEngine(mode, onProgress) {
+  const cfg = ENGINE_MODES[mode] || ENGINE_MODES.balanced;
+  const urls = cfg.wasm ? [cfg.js, cfg.wasm] : [cfg.js];
+  const key = urls.join('|');
+  if (prefetchCache.has(key)) return prefetchCache.get(key);
+
+  const promise = (async () => {
+    const sizes = urls.map(() => 0);
+    const loadedArr = urls.map(() => 0);
+    const known = urls.map(() => false);
+
+    const report = () => {
+      const loaded = loadedArr.reduce((a, b) => a + b, 0);
+      const totalKnown = known.every(Boolean);
+      const total = sizes.reduce((a, b) => a + b, 0);
+      let pct;
+      if (totalKnown && total > 0) pct = Math.min(99, Math.round((loaded / total) * 100));
+      else pct = Math.min(90, Math.round(loaded / 5e5));
+      onProgress?.({ loaded, total, pct, label: cfg.label });
+    };
+
+    await Promise.all(urls.map((url, i) =>
+      fetchWithProgress(url, (loaded, total) => {
+        loadedArr[i] = loaded;
+        if (total > 0) { sizes[i] = total; known[i] = true; }
+        report();
+      })
+    ));
+    onProgress?.({
+      loaded: sizes.reduce((a, b) => a + b, 0) || loadedArr.reduce((a, b) => a + b, 0),
+      total: sizes.reduce((a, b) => a + b, 0) || loadedArr.reduce((a, b) => a + b, 0),
+      pct: 100,
+      label: cfg.label,
+    });
   })().catch(err => {
-    prefetchPromise = null;
+    prefetchCache.delete(key);
     throw err;
   });
-  return prefetchPromise;
+
+  prefetchCache.set(key, promise);
+  return promise;
 }
 
 class Engine {
-  constructor() {
-    this.worker = new Worker(new URL('./sf-worker.js', import.meta.url));
+  /** @param {typeof ENGINE_MODES[EngineMode]} cfg */
+  constructor(cfg) {
+    this.cfg = cfg;
+    // Cross-origin worker: script + sibling .wasm resolve via unpkg same-dir paths.
+    this.worker = new Worker(cfg.js);
     this.pending = null;
     this.readyResolve = null;
     this.readyReject = null;
@@ -52,8 +128,11 @@ class Engine {
         this.readyResolve = null;
         this.readyReject = null;
       }
-    }, 60000);
-    this.worker.onmessage = e => this._onLine(typeof e.data === 'string' ? e.data : String(e.data));
+    }, cfg.wasm ? 180000 : 60000);
+    this.worker.onmessage = e => {
+      const data = e.data;
+      this._onLine(typeof data === 'string' ? data : String(data));
+    };
     this.worker.onerror = (err) => {
       if (this.readyReject) {
         this.readyReject(err?.message || 'worker error');
@@ -69,9 +148,8 @@ class Engine {
   _bootOptions() {
     if (this._booted) return;
     this._booted = true;
-    // stockfish.js@10 asm build: Hash max is 16 - higher values hang the engine.
     this.send('setoption name MultiPV value ' + MULTIPV);
-    this.send('setoption name Hash value 16');
+    this.send('setoption name Hash value ' + this.cfg.hash);
     this.send('isready');
   }
 
@@ -155,14 +233,17 @@ function parseInfo(line) {
 }
 
 export class EnginePool {
-  constructor(size) {
+  /** @param {EngineMode} mode */
+  constructor(mode) {
+    const cfg = ENGINE_MODES[mode] || ENGINE_MODES.balanced;
+    this.cfg = cfg;
     const hw = navigator.hardwareConcurrency || 4;
-    this.size = Math.max(1, Math.min(size ?? 2, Math.max(1, hw - 1), 3));
+    this.size = Math.max(1, Math.min(cfg.pool, Math.max(1, hw - 1), 3));
     this.engines = [];
     this.free = [];
     this.queue = [];
     for (let i = 0; i < this.size; i++) {
-      const e = new Engine();
+      const e = new Engine(cfg);
       this.engines.push(e);
       this.free.push(e);
     }

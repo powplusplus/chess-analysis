@@ -5,7 +5,8 @@ move-by-move report with Brilliant / Great / Best / Excellent / Good / Book /
 Inaccuracy / Mistake / Miss / Blunder badges, per-side accuracy, an estimated
 game rating, an evaluation timeline and a move list.
 
-Stockfish runs locally in Web Workers - no server for engine analysis.
+Stockfish 18 runs locally in Web Workers - no server for engine analysis.
+Mode picks the build: Fast (asm), Balanced (Lite ~7MB), Deep (full ~110MB).
 Coach Overview uses Gemma 4 31B (thinking) via the Google Generative Language API.
 
 ## Run it locally
@@ -39,8 +40,7 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 
 | File | Job |
 |---|---|
-| `js/sf-worker.js` | one line: loads Stockfish (GPLv3 asm.js build) into a worker |
-| `js/engine.js` | UCI wrapper + a 3-worker pool so positions are crunched in parallel |
+| `js/engine.js` | Stockfish 18 UCI wrapper + worker pool (asm / lite / full by mode) |
 | `js/classify.js` | win% model, accuracy, and the classification rules |
 | `js/book.js` | small opening book for the Book badge |
 | `js/chesscom.js` | public Chess.com API client |
@@ -68,12 +68,16 @@ Accuracy per move is `103.1668·e^(-0.04354·drop) − 3.1669`; the game figure 
 the arithmetic and harmonic means. Estimated rating is fitted so ~76% accuracy
 lands near 900 and ~90% near 1750.
 
-Depth is adjustable in the sidebar: Fast (10), Balanced (13), Deep (16).
+Sidebar mode (persisted in `localStorage`):
+
+* **Fast** - Stockfish 18 asm.js, depth 10 (~10MB, weakest / broadest compat)
+* **Balanced** - Stockfish 18 Lite single-thread WASM, depth 12 (~7MB)
+* **Deep** - Stockfish 18 full single-thread WASM, depth 16 (~110MB NNUE)
 
 ## Credits
 
-Stockfish is GPLv3; this app loads the JS build by Niklas Fiekas from jsDelivr
-and does not redistribute it. Move generation is chess.js (BSD). Board colours
-match Chess.com's green theme. Piece artwork under `pieces/neo/` is Chess.com's
-default Neo set, cached locally for offline use. Layout and analysis code here
-are original - this is not affiliated with Chess.com.
+Stockfish is GPLv3; this app loads Nathan Rugg's Stockfish.js 18 builds from
+unpkg and does not redistribute them. Move generation is chess.js (BSD). Board
+colours match Chess.com's green theme. Piece artwork under `pieces/neo/` is
+Chess.com's default Neo set, cached locally for offline use. Layout and analysis
+code here are original - this is not affiliated with Chess.com.
