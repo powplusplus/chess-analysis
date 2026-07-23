@@ -456,6 +456,17 @@ body.reviewing .topbar{padding:6px 14px}
 .move-detail .md-head svg{width:18px;height:18px}
 .move-detail .md-name{font-weight:800;font-size:13.5px}
 .move-detail .md-best{color:var(--txt);font-family:var(--mono);font-size:12px}
+.move-detail .md-opening{
+  display:flex;align-items:center;gap:6px;margin-bottom:6px;padding-bottom:6px;
+  border-bottom:1px solid var(--line);
+}
+.move-detail .md-opening svg{width:15px;height:15px;flex:none}
+.move-detail .md-op-name{color:var(--c-book);font-weight:700;font-size:12.5px}
+.move-detail .md-op-tag{
+  margin-left:auto;font-size:10px;font-weight:800;letter-spacing:.03em;
+  text-transform:uppercase;color:var(--c-book);border:1px solid var(--c-book);
+  border-radius:4px;padding:1px 5px;opacity:.85;
+}
 
 /* ============ coach (left of board) ============ */
 .coach{

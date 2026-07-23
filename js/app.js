@@ -2,6 +2,7 @@ import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
 import { EnginePool, prefetchEngine, ENGINE_MODES } from './engine.js';
 import { icon, colorOf, labelOf, timeClassIcon, timeClassLabel } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
+import { openingName } from './book.js';
 import {
   fetchRecentGames, fetchPlayers, summarise, gameIdFromUrl,
   describeEnd, describeEndFromHeaders,
@@ -696,7 +697,8 @@ function renderDetail() {
   if (state.ply === 0) { el.innerHTML = '<span>Starting position. Use ← and → to step through.</span>'; return; }
   const mv = state.moves[state.ply - 1];
   const rep = state.reports[state.ply - 1];
-  if (!rep) { el.innerHTML = `<span>${mv.san} - not analysed yet.</span>`; return; }
+  const openingLine = openingRow(state.ply);
+  if (!rep) { el.innerHTML = openingLine + `<span>${mv.san} - not analysed yet.</span>`; return; }
 
   const evalTxt = fmtCp(rep.cpAfter);
   let best = '';
@@ -707,9 +709,22 @@ function renderDetail() {
       if (bm) best = `Best was <b>${bm.san}</b>`;
     } catch (_) {}
   }
-  el.innerHTML = `
+  el.innerHTML = openingLine + `
     <div class="md-head">${icon(rep.cls)}<span class="md-name" style="color:${colorOf(rep.cls)}">${mv.san} is ${labelOf(rep.cls).toLowerCase()}</span></div>
     <div class="md-best">${evalTxt}${best ? ' · ' + best : ''}${rep.cls === 'book' ? ' · known theory' : ''}</div>`;
+}
+
+// The opening/line/gambit name for the position reached after `ply` moves.
+// Refines as theory is followed and keeps the last known name once the game
+// leaves book; a small marker shows whether the current move is still theory.
+function openingRow(ply) {
+  const sans = state.moves.slice(0, ply).map(m => m.san);
+  const name = openingName(sans);
+  if (!name) return '';
+  const rep = state.reports[ply - 1];
+  const stillBook = rep ? rep.cls === 'book' : false;
+  const tag = stillBook ? '<span class="md-op-tag">Book</span>' : '';
+  return `<div class="md-opening">${icon('book')}<span class="md-op-name">${esc(name)}</span>${tag}</div>`;
 }
 
 function fmtCp(cp) {
@@ -834,8 +849,11 @@ function renderReport() {
 
   $('tally-more').hidden = true;
 
-  const op = state.meta.opening;
-  $('opening').innerHTML = op ? `Opening: <b>${esc(op)}</b>${state.meta.eco ? ' · ' + esc(state.meta.eco) : ''}` : '';
+  // Prefer the game's own opening tag; fall back to the deepest name our book
+  // recognises across the whole game.
+  const op = state.meta.opening || openingName(state.moves.map(m => m.san));
+  const eco = state.meta.opening ? state.meta.eco : null;
+  $('opening').innerHTML = op ? `Opening: <b>${esc(op)}</b>${eco ? ' · ' + esc(eco) : ''}` : '';
 }
 
 /* ─────────────────── evaluation timeline ─────────────────── */
