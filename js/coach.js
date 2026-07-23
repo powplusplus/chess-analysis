@@ -35,11 +35,20 @@ Grounding rules (strict, never break):
 - If mover better alternative / PV or your-reply PV is given, prefer those labeled lines. Never treat the mover's missed move as the reviewer's reply. If a detail is missing, omit it. Prefer a shorter true note over a vivid guess.
 - Before writing, silently check each claim against the facts above. Drop any claim you cannot verify.`;
 
+// Tense framing. A finished game is being reviewed after the fact, so advice
+// must not read as if the reviewer can make the move right now. A live game is
+// still in progress, so present-tense "what to play from here" is correct.
+function tenseBlock(isLive) {
+  return isLive
+    ? `Tense: This game is still in progress. Present tense is fine. You may advise what to play from here, since the position is live.`
+    : `Tense (strict): This is a completed game being reviewed after the fact. The moves were already played and cannot be changed now. Write about them in the past tense. Frame better options as what was available then: "you could have played", "the stronger move was", "that let the position slip". Do NOT tell the reviewer to play, push, take, or castle now, and do not phrase engine lines as live instructions. General principles can stay in the present ("knights belong on active squares"), but concrete advice for this position describes what should have happened, not what to do at this moment.`;
+}
+
 export function buildGameOverviewPrompt(ctx) {
   const {
     white, black, result, opening, eco,
     accW, accB, ratingW, ratingB,
-    tallies, critical, moveLine, meSide,
+    tallies, critical, moveLine, meSide, isLive,
   } = ctx;
 
   const seat = meSide === 'w' ? 'White' : meSide === 'b' ? 'Black' : null;
@@ -68,6 +77,8 @@ Estimated game rating: White ${ratingW ?? 'n/a'}, Black ${ratingB ?? 'n/a'}`;
 
   return `${STYLE}
 
+${tenseBlock(isLive)}
+
 ${task}
 
 ${seatBlock}
@@ -87,7 +98,7 @@ export function buildMovePrompt(ctx) {
     white, black, meSide, ply, moveNum, san, color, cls,
     cpBefore, cpAfter, bestSan, bestLine, replySan, replyLine,
     fenBefore, fenAfter, recent, opening,
-    wBefore, wAfter, drop, sacrifice, hasBoardImages,
+    wBefore, wAfter, drop, sacrifice, hasBoardImages, isLive,
   } = ctx;
 
   const mover = color === 'w' ? 'White' : 'Black';
@@ -149,6 +160,8 @@ ${replyBlock}`;
       : `Opponent moved. Mover better alternative is what THEY missed, not your reply. For how YOU should respond, use only "Your best reply" / reply PV. Never tell the reviewer to play the mover alternative.`;
 
   return `${STYLE}
+
+${tenseBlock(isLive)}
 
 ${task}
 

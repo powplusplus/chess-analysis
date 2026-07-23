@@ -1741,6 +1741,7 @@ function makeOverviewPrompt() {
     critical: criticalMoments(state.reports, state.moves, state.evals, 5, meSide()),
     moveLine: moveLine(state.moves, state.reports),
     meSide: meSide(),
+    isLive: state.live && !state.liveFinished,
   });
 }
 
@@ -1820,6 +1821,7 @@ function makeMovePrompt(opts = {}) {
     drop: rep?.drop ?? null,
     sacrifice: !!rep?.sacrifice,
     hasBoardImages: !!opts.hasBoardImages,
+    isLive: state.live && !state.liveFinished,
   });
 }
 
