@@ -1,13 +1,13 @@
 const TTS_MODELS = [
-  'gemini-3.1-flash-tts-preview',
   'gemini-2.5-flash-preview-tts',
+  'gemini-3.1-flash-tts-preview',
 ];
 const VOICE = 'Charon';
 
 const STYLE_PREFIX = `# AUDIO PROFILE: Magnus — Norwegian chess coach
 ### DIRECTOR'S NOTES
 Dry understated Scandinavian male. Soft mid-low chest voice. Calm, wry, matter-of-fact at the board — not theatrical, not American radio.
-Pace: Unhurried with natural pauses.
+Pace: Natural conversational. Light pauses only.
 Accent: Light Oslo English. Soft consonants. English only.
 #### TRANSCRIPT
 `;

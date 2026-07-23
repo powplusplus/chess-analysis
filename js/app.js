@@ -13,7 +13,7 @@ import {
 } from './coach.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
+import { synthesizeCoachSpeech, splitTtsChunks, streamCoachSpeech } from './tts.js';
 import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
@@ -43,7 +43,8 @@ const state = {
   coachBusy: false,
   coachTargetKey: null,
   coachSpeakId: 0,
-  coachAudio: null,     // HTMLAudioElement for neural TTS
+  coachAudio: null,     // HTMLAudioElement for batch TTS fallback
+  coachAudioCtx: null,  // AudioContext for streamed PCM
   coachTtsAbort: null,
   user: null,           // chess.com username for current games list
   games: [],            // raw games from last fetch
@@ -997,6 +998,7 @@ function stopAutoplay() {
     renderAll();
   }
   setPlayIcon(false);
+  syncCoachUi();
 }
 
 async function autoplayStep(gen) {
@@ -1014,6 +1016,12 @@ async function autoplayStep(gen) {
 function startAutoplay() {
   if (!state.moves.length) return;
   if (state.ply >= state.moves.length) goto(0, { animate: false, sound: false });
+  // Play owns the board — kill in-flight coach Analyze / TTS.
+  if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
+  state.coachBusy = false;
+  state.coachTargetKey = null;
+  state.coachReqId++;
+  stopCoachSpeech();
   state.autoplay = true;
   state.autoplayGen++;
   const gen = state.autoplayGen;
@@ -1022,6 +1030,7 @@ function startAutoplay() {
     clearTimeout(state.autoplayTimer);
     state.autoplayTimer = null;
   }
+  syncCoachUi();
   // Step once now — setTimeout alone waits a full period before first move.
   autoplayStep(gen);
 }
@@ -1037,6 +1046,10 @@ function stopCoachSpeech() {
   if (state.coachTtsAbort) {
     try { state.coachTtsAbort.abort(); } catch { /* ignore */ }
     state.coachTtsAbort = null;
+  }
+  if (state.coachAudioCtx) {
+    try { state.coachAudioCtx.close(); } catch { /* ignore */ }
+    state.coachAudioCtx = null;
   }
   if (state.coachAudio) {
     try {
@@ -1090,6 +1103,92 @@ function playCoachBlob(blob, id) {
   });
 }
 
+/** Play streamed PCM (24kHz s16le mono) as it arrives — ~2s to first sound. */
+async function playCoachPcmStream(pcmStream, id) {
+  const ctx = new AudioContext();
+  state.coachAudioCtx = ctx;
+  if (ctx.state === 'suspended') {
+    try { await ctx.resume(); } catch { /* ignore */ }
+  }
+
+  // 300ms lead absorbs chunk jitter.
+  let playhead = ctx.currentTime + 0.3;
+  let carry = new Uint8Array(0);
+  let rate = 24000;
+  let scheduled = 0;
+
+  const schedulePcm = (bytes) => {
+    if (!bytes.length) return;
+    const merged = new Uint8Array(carry.length + bytes.length);
+    merged.set(carry);
+    merged.set(bytes, carry.length);
+    const usable = merged.length - (merged.length % 2);
+    carry = usable < merged.length ? merged.slice(usable) : new Uint8Array(0);
+    if (usable < 2) return;
+
+    const samples = usable / 2;
+    // Buffer at native PCM rate — AudioContext resamples on play.
+    const buf = ctx.createBuffer(1, samples, rate);
+    const ch = buf.getChannelData(0);
+    const view = new DataView(merged.buffer, merged.byteOffset, usable);
+    for (let i = 0; i < samples; i++) {
+      ch[i] = view.getInt16(i * 2, true) / 32768;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    const startAt = Math.max(playhead, ctx.currentTime + 0.02);
+    src.start(startAt);
+    playhead = startAt + buf.duration;
+    scheduled += buf.duration;
+  };
+
+  try {
+    for await (const chunk of pcmStream) {
+      if (id !== state.coachSpeakId) return;
+      if (chunk.sampleRate) rate = chunk.sampleRate;
+      schedulePcm(chunk.pcm);
+    }
+    if (id !== state.coachSpeakId) return;
+    const remain = playhead - ctx.currentTime;
+    if (remain > 0) {
+      await new Promise((resolve) => {
+        const ms = Math.ceil(remain * 1000) + 40;
+        const t = setTimeout(resolve, ms);
+        const iv = setInterval(() => {
+          if (id !== state.coachSpeakId) {
+            clearTimeout(t);
+            clearInterval(iv);
+            resolve();
+          }
+        }, 100);
+        setTimeout(() => clearInterval(iv), ms + 20);
+      });
+    }
+  } finally {
+    if (state.coachAudioCtx === ctx) {
+      try { await ctx.close(); } catch { /* ignore */ }
+      state.coachAudioCtx = null;
+    }
+  }
+  if (!scheduled) throw new Error('Empty TTS stream play');
+}
+
+async function speakCoachBatch(spoken, id, signal) {
+  // Short first chunk → audio ASAP; prefetch next while playing.
+  const chunks = splitTtsChunks(spoken);
+  let nextP = synthesizeCoachSpeech(chunks[0], signal);
+  for (let i = 0; i < chunks.length; i++) {
+    if (id !== state.coachSpeakId) return;
+    const blob = await nextP;
+    if (id !== state.coachSpeakId) return;
+    if (i + 1 < chunks.length) {
+      nextP = synthesizeCoachSpeech(chunks[i + 1], signal);
+    }
+    await playCoachBlob(blob, id);
+  }
+}
+
 async function speakCoach(text) {
   stopCoachSpeech();
   const spoken = String(text || '').replace(/\s+/g, ' ').trim();
@@ -1099,22 +1198,16 @@ async function speakCoach(text) {
   state.coachTtsAbort = ac;
 
   try {
-    // First short chunk → audio ASAP; prefetch next while playing.
-    const chunks = splitTtsChunks(spoken);
-    let nextP = synthesizeCoachSpeech(chunks[0], ac.signal);
-    for (let i = 0; i < chunks.length; i++) {
-      if (id !== state.coachSpeakId) return;
-      const blob = await nextP;
-      if (id !== state.coachSpeakId) return;
-      if (i + 1 < chunks.length) {
-        nextP = synthesizeCoachSpeech(chunks[i + 1], ac.signal);
-      }
-      await playCoachBlob(blob, id);
-    }
+    // One stream for full text — first PCM ~2s (not wait full render).
+    await playCoachPcmStream(streamCoachSpeech(spoken, ac.signal), id);
   } catch (ex) {
     if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
-    // Neural TTS unavailable → last-resort browser voice
-    speakCoachBrowser(spoken, id);
+    try {
+      await speakCoachBatch(spoken, id, ac.signal);
+    } catch (ex2) {
+      if (ex2.name === 'AbortError' || id !== state.coachSpeakId) return;
+      speakCoachBrowser(spoken, id);
+    }
   } finally {
     if (state.coachTtsAbort === ac) state.coachTtsAbort = null;
   }
@@ -1191,10 +1284,14 @@ function syncCoachUi() {
   }
 
   const ready = analysisReady() && state.moves.length > 0;
-  btn.disabled = !ready || state.coachBusy;
+  btn.disabled = !ready || state.coachBusy || state.autoplay;
 
   if (!state.moves.length) {
     setCoachPlaceholder('Load a game to get coaching.');
+    return;
+  }
+  if (state.autoplay) {
+    setCoachPlaceholder('Pause playback to analyze.');
     return;
   }
   if (!analysisReady()) {
@@ -1218,7 +1315,7 @@ function syncCoachUi() {
 }
 
 async function runCoachAnalyze() {
-  if (!analysisReady() || state.coachBusy) return;
+  if (state.autoplay || !analysisReady() || state.coachBusy) return;
   const cacheKey = coachCacheKey();
   if (state.coachCache.has(cacheKey)) {
     const cached = state.coachCache.get(cacheKey);
