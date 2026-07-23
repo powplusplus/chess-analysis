@@ -68,23 +68,172 @@ export function gameIdFromUrl(url) {
   return m ? m[1] : null;
 }
 
+/** Chess.com player.result → phrase after won / lost / drawn. */
+const HOW = {
+  checkmated: 'by checkmate',
+  resigned: 'by resignation',
+  timeout: 'on time',
+  abandoned: 'by abandonment',
+  agreed: 'by agreement',
+  repetition: 'by repetition',
+  stalemate: 'by stalemate',
+  insufficient: 'by insufficient material',
+  '50move': 'by the 50-move rule',
+  timevsinsufficient: 'by timeout vs insufficient material',
+};
+
+/** Compact label under Win/Loss/Draw on game cards. */
+const SHORT = {
+  checkmated: 'checkmate',
+  resigned: 'resignation',
+  timeout: 'timeout',
+  abandoned: 'abandoned',
+  agreed: 'agreement',
+  repetition: 'repetition',
+  stalemate: 'stalemate',
+  insufficient: 'insufficient',
+  '50move': '50-move',
+  timevsinsufficient: 'time vs material',
+};
+
+export function howPhrase(code) {
+  const c = String(code || '').toLowerCase();
+  if (!c || c === 'win' || c === 'lose') return '';
+  return HOW[c] || `by ${c}`;
+}
+
+function shortHowOf(code) {
+  const c = String(code || '').toLowerCase();
+  if (!c || c === 'win' || c === 'lose') return '';
+  return SHORT[c] || c;
+}
+
+/**
+ * Chess.com-style end text from white/black result codes.
+ * @returns {{ result:'win'|'loss'|'draw', how:string, headline:string, shortHow:string }}
+ */
+export function describeEnd(whiteResult, blackResult, opts = {}) {
+  const wr = String(whiteResult || '').toLowerCase();
+  const br = String(blackResult || '').toLowerCase();
+  const { whiteName = 'White', blackName = 'Black', meIsWhite = null } = opts;
+
+  let winner = null; // 'w' | 'b'
+  if (wr === 'win') winner = 'w';
+  else if (br === 'win') winner = 'b';
+
+  const howCode = winner === 'w' ? br : winner === 'b' ? wr : (wr || br);
+  const how = howPhrase(howCode);
+  const shortHow = shortHowOf(howCode);
+
+  let result = 'draw';
+  if (meIsWhite != null && winner) {
+    result = ((winner === 'w') === !!meIsWhite) ? 'win' : 'loss';
+  } else if (winner) {
+    // No seat → result from white's perspective (1-0 style).
+    result = winner === 'w' ? 'win' : 'loss';
+  }
+
+  let headline;
+  if (!winner) {
+    headline = how ? `Game drawn ${how}` : 'Game drawn';
+  } else if (meIsWhite != null) {
+    const youWon = (winner === 'w') === !!meIsWhite;
+    headline = youWon
+      ? (how ? `You won ${how}` : 'You won')
+      : (how ? `You lost ${how}` : 'You lost');
+  } else {
+    const name = winner === 'w' ? whiteName : blackName;
+    headline = how ? `${name} won ${how}` : `${name} won`;
+  }
+
+  return { result, how, headline, shortHow };
+}
+
+/** Prefer PGN Termination; fall back to Result. */
+export function describeEndFromHeaders(headers, opts = {}) {
+  const term = (headers.Termination || '').trim();
+  const res = (headers.Result || '').trim();
+  const { meIsWhite = null, whiteName = 'White', blackName = 'Black' } = opts;
+
+  let result = 'draw';
+  if (res === '1-0') result = meIsWhite == null ? 'win' : (meIsWhite ? 'win' : 'loss');
+  else if (res === '0-1') result = meIsWhite == null ? 'loss' : (meIsWhite ? 'loss' : 'win');
+
+  if (term) {
+    let headline = term;
+    if (meIsWhite != null) {
+      const wonBy = term.match(/^(.+?)\s+won\s+(.+)$/i);
+      if (wonBy) {
+        const who = wonBy[1].trim().toLowerCase();
+        const rest = wonBy[2].trim();
+        const w = String(whiteName).toLowerCase();
+        const b = String(blackName).toLowerCase();
+        const whiteWon = who === w || who === 'white';
+        const blackWon = who === b || who === 'black';
+        if (whiteWon || blackWon) {
+          const youWon = whiteWon === !!meIsWhite;
+          headline = youWon ? `You won ${rest}` : `You lost ${rest}`;
+        }
+      }
+    }
+    const m = term.match(/\b((?:by|on)\s.+)$/i);
+    const how = m ? m[1] : '';
+    return {
+      result,
+      how,
+      headline,
+      shortHow: how.replace(/^(?:by|on)\s+/i, '').replace(/^the\s+/i, ''),
+    };
+  }
+
+  if (res === '1-0') return describeEnd('win', 'resigned', { whiteName, blackName, meIsWhite });
+  if (res === '0-1') return describeEnd('resigned', 'win', { whiteName, blackName, meIsWhite });
+  if (res === '1/2-1/2') return describeEnd('agreed', 'agreed', { whiteName, blackName, meIsWhite });
+  return { result: 'draw', how: '', headline: '', shortHow: '' };
+}
+
+function formatTimeControl(game) {
+  const tc = String(game.time_control || '');
+  let timeControl = tc;
+  const m = tc.match(/^(\d+)(?:\+(\d+(?:\.\d+)?)?)?$/);
+  if (m) {
+    const base = parseInt(m[1], 10);
+    const inc = m[2] != null && m[2] !== '' ? m[2] : null;
+    if (game.time_class === 'daily') {
+      timeControl = `${base} day${base === 1 ? '' : 's'}`;
+    } else if (base >= 60) {
+      const mins = Math.round(base / 60);
+      timeControl = inc != null ? `${mins}+${inc}` : `${mins} min`;
+    } else {
+      timeControl = inc != null ? `${base}+${inc}` : `${base}s`;
+    }
+  }
+  return timeControl;
+}
+
 export function summarise(game, user) {
   const w = game.white || {}, b = game.black || {};
   const meIsWhite = (w.username || '').toLowerCase() === user;
-  const me = meIsWhite ? w : b;
   const them = meIsWhite ? b : w;
 
-  let result = 'draw';
-  if (me.result === 'win') result = 'win';
-  else if (them.result === 'win') result = 'loss';
+  const end = describeEnd(w.result, b.result, {
+    whiteName: w.username || 'White',
+    blackName: b.username || 'Black',
+    meIsWhite,
+  });
 
-  const secs = game.time_control ? parseInt(game.time_control, 10) : null;
   return {
     white: { name: w.username || 'White', rating: w.rating },
     black: { name: b.username || 'Black', rating: b.rating },
-    meIsWhite, opponent: them.username || '-', result,
+    meIsWhite, opponent: them.username || '-',
+    result: end.result,
+    how: end.how,
+    shortHow: end.shortHow,
+    headline: end.headline,
+    whiteResult: w.result || null,
+    blackResult: b.result || null,
     timeClass: game.time_class || 'game',
-    timeControl: secs ? `${Math.round(secs / 60)} min` : (game.time_control || ''),
+    timeControl: formatTimeControl(game),
     date: game.end_time ? new Date(game.end_time * 1000) : null,
     pgn: game.pgn,
     url: game.url,

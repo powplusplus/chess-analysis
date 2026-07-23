@@ -1,5 +1,8 @@
 const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+const MAX_IMAGES = 2;
+const MAX_IMAGE_BYTES = 1_000_000;
+const THINK_LEVELS = ['MAX', 'HIGH'];
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -26,23 +29,18 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
+  const images = sanitizeImages(body.images);
+  const parts = [];
+  for (const img of images) {
+    parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+  }
+  parts.push({ text: prompt });
+
   try {
-    const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.25,
-          maxOutputTokens: 8192,
-          thinkingConfig: { thinkingLevel: 'HIGH' },
-        },
-      }),
-    });
-    const data = await r.json();
-    if (!r.ok) {
-      const msg = data?.error?.message || `Gemini error ${r.status}`;
-      return res.status(r.status).json({ error: msg });
+    const { data, status } = await generateWithFallback(key, parts);
+    if (status !== 200) {
+      const msg = data?.error?.message || `Gemini error ${status}`;
+      return res.status(status).json({ error: msg });
     }
     const text = extractText(data);
     if (!text) return res.status(502).json({ error: 'Empty coach reply' });
@@ -50,6 +48,47 @@ export default async function handler(req, res) {
   } catch (ex) {
     return res.status(502).json({ error: ex.message || 'Coach request failed' });
   }
+}
+
+function sanitizeImages(images) {
+  if (!Array.isArray(images) || !images.length) return [];
+  const out = [];
+  for (const img of images.slice(0, MAX_IMAGES)) {
+    if (!img || typeof img.data !== 'string' || !img.data) continue;
+    const mime = typeof img.mimeType === 'string' && img.mimeType.startsWith('image/')
+      ? img.mimeType
+      : 'image/png';
+    const bytes = Math.floor(img.data.length * 0.75);
+    if (bytes > MAX_IMAGE_BYTES) continue;
+    out.push({ mimeType: mime, data: img.data });
+  }
+  return out;
+}
+
+async function generateWithFallback(key, parts) {
+  let last = null;
+  for (const level of THINK_LEVELS) {
+    const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          temperature: 0.25,
+          maxOutputTokens: 8192,
+          thinkingConfig: { thinkingLevel: level },
+        },
+      }),
+    });
+    const data = await r.json();
+    if (r.ok) return { data, status: 200 };
+    const msg = data?.error?.message || '';
+    last = { data, status: r.status };
+    if (!/thinkingLevel|ThinkingLevel|invalid.*MAX|Unsupported.*thinking/i.test(msg)) {
+      return last;
+    }
+  }
+  return last || { data: { error: { message: 'Gemini request failed' } }, status: 502 };
 }
 
 function extractText(data) {

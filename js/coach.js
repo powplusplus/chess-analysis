@@ -2,6 +2,9 @@ import { labelOf } from './icons.js';
 
 const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+const MAX_IMAGES = 2;
+const MAX_IMAGE_BYTES = 1_000_000; // ~1MB raw base64 decode budget per image
+const THINK_LEVELS = ['MAX', 'HIGH'];
 
 async function loadApiKey() {
   try {
@@ -22,8 +25,9 @@ Voice rules (strict):
 - Never only restate the move or its label (Best, Blunder, etc). Explain the idea, the plan, and what to do next.
 
 Grounding rules (strict, never break):
-- Use ONLY facts in this prompt: players, result, opening, accuracy, ratings, move tags, evals, engine best, PV, FEN, critical moments.
+- Use ONLY facts in this prompt: players, result, opening, accuracy, ratings, move tags, evals, engine best, PV, FEN, board images, critical moments.
 - Do NOT invent tactics, checks, captures, pins, forks, mates, threats, or piece placements not supported by those facts.
+- When board images are attached, trust visible piece placement on those images together with the FEN. Do not place pieces that are not on the boards / FEN.
 - Do NOT invent opening names, ECO codes, or plans beyond the given Opening line.
 - Do NOT invent scores, ratings, or move labels. Trust Engine class and evals over your own recall.
 - If engine best / PV is given, prefer that line. If a detail is missing, omit it. Prefer a shorter true note over a vivid guess.
@@ -80,7 +84,7 @@ export function buildMovePrompt(ctx) {
   const {
     white, black, meSide, ply, moveNum, san, color, cls,
     cpBefore, cpAfter, bestSan, bestLine, fenBefore, fenAfter, recent, opening,
-    wBefore, wAfter, drop, sacrifice,
+    wBefore, wAfter, drop, sacrifice, hasBoardImages,
   } = ctx;
 
   const mover = color === 'w' ? 'White' : 'Black';
@@ -116,6 +120,10 @@ No reviewer seat known. Keep the note balanced.`;
     sacrifice ? 'Engine flagged a real piece sacrifice on this move.' : null,
   ].filter(Boolean).join('\n');
 
+  const boardBlock = hasBoardImages
+    ? `Board images: two PNGs are attached before this text. Image 1 = BEFORE the move. Image 2 = AFTER the move (yellow squares = from/to of the played move). Use them with the FEN to see piece placement. Do not invent pieces or tactics not visible there or in the engine facts.`
+    : '';
+
   return `${STYLE}
 
 ${task}
@@ -132,19 +140,55 @@ Engine best PV (SAN): ${bestLine || 'n/a'}
 Position before (FEN): ${fenBefore || 'n/a'}
 Position after (FEN): ${fenAfter}
 Recent moves: ${recent}
-${address}
+${boardBlock ? `${boardBlock}\n` : ''}${address}
 
-Anchor on engine class, eval change, and the best PV. If the move was good, say why from those facts. If wrong, name the failed idea and the better plan from Engine best / PV in plain words. Do not invent tactics absent from FEN or PV. No em dashes.`;
+Anchor on engine class, eval change, and the best PV. If the move was good, say why from those facts. If wrong, name the failed idea and the better plan from Engine best / PV in plain words. Do not invent tactics absent from FEN, board images, or PV. No em dashes.`;
 }
 
-export async function askCoach(prompt, signal) {
+function sanitizeImages(images) {
+  if (!Array.isArray(images) || !images.length) return [];
+  const out = [];
+  for (const img of images.slice(0, MAX_IMAGES)) {
+    if (!img || typeof img.data !== 'string' || !img.data) continue;
+    const mime = img.mimeType || 'image/png';
+    // Rough byte size from base64 length
+    const bytes = Math.floor(img.data.length * 0.75);
+    if (bytes > MAX_IMAGE_BYTES) continue;
+    out.push({ mimeType: mime, data: img.data });
+  }
+  return out;
+}
+
+function buildParts(prompt, images) {
+  const parts = [];
+  for (const img of sanitizeImages(images)) {
+    parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+  }
+  parts.push({ text: prompt });
+  return parts;
+}
+
+function genConfig(thinkingLevel) {
+  return {
+    temperature: 0.25,
+    maxOutputTokens: 8192,
+    thinkingConfig: { thinkingLevel },
+  };
+}
+
+function isThinkingLevelError(msg) {
+  return /thinkingLevel|ThinkingLevel|invalid.*MAX|Unsupported.*thinking/i.test(msg || '');
+}
+
+export async function askCoach(prompt, signal, images) {
+  const imgs = sanitizeImages(images);
   // 1) Same-origin Vercel proxy (preferred - key stays on server)
   let proxyMiss = false;
   try {
     const r = await fetch('/api/coach', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, images: imgs.length ? imgs : undefined }),
       signal,
     });
     if (r.ok) {
@@ -168,28 +212,33 @@ export async function askCoach(prompt, signal) {
   if (!key || key.includes('your_google')) {
     throw new Error('Coach needs GOOGLE_API_KEY on Vercel (Settings → Environment Variables), or js/coach-config.js locally.');
   }
-  return callGemini(key, prompt, signal);
+  return callGemini(key, prompt, signal, imgs);
 }
 
-async function callGemini(key, prompt, signal) {
-  const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.25,
-        maxOutputTokens: 8192,
-        thinkingConfig: { thinkingLevel: 'HIGH' },
-      },
-    }),
-    signal,
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data?.error?.message || `Gemini error ${r.status}`);
-  const text = extractText(data);
-  if (!text) throw new Error('Empty coach reply');
-  return text;
+async function callGemini(key, prompt, signal, images) {
+  const parts = buildParts(prompt, images);
+  let lastErr = null;
+  for (const level of THINK_LEVELS) {
+    const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: genConfig(level),
+      }),
+      signal,
+    });
+    const data = await r.json();
+    if (r.ok) {
+      const text = extractText(data);
+      if (!text) throw new Error('Empty coach reply');
+      return text;
+    }
+    const msg = data?.error?.message || `Gemini error ${r.status}`;
+    lastErr = new Error(msg);
+    if (!isThinkingLevelError(msg)) throw lastErr;
+  }
+  throw lastErr || new Error('Gemini request failed');
 }
 
 function extractText(data) {

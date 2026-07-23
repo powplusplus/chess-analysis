@@ -155,7 +155,13 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
   box-shadow:var(--shadow);
 }
 .game-card:hover{background:var(--panel-2);border-color:#4a4742}
-.game-tc{font-size:12px;font-weight:800;color:var(--txt-dim);text-align:center;line-height:1.25;text-transform:capitalize}
+.game-tc{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  font-size:11px;font-weight:800;color:var(--txt-dim);text-align:center;line-height:1.15;
+  letter-spacing:.02em;
+}
+.game-tc .tc-ico{width:22px;height:22px;display:block;color:var(--txt-dim)}
+.game-card:hover .game-tc,.game-card:hover .tc-ico{color:var(--txt)}
 .game-players{display:flex;flex-direction:column;gap:4px;min-width:0}
 .game-side{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden}
 .game-side .pname{overflow:hidden;text-overflow:ellipsis}
@@ -174,8 +180,13 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
   padding:1px 4px;border-radius:2px;vertical-align:middle;text-transform:uppercase;
 }
 .game-elo{color:var(--txt-faint);font-size:12.5px;font-weight:600}
+.game-res-col{display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:72px}
 .game-res{font-weight:800;font-size:12px;padding:4px 10px;border-radius:5px;background:#1a1917;text-transform:uppercase;letter-spacing:.04em}
 .res-win{color:#a7d977}.res-loss{color:#ff9182}.res-draw{color:var(--txt-dim)}
+.game-how{
+  font-size:11px;font-weight:600;color:var(--txt-faint);text-transform:capitalize;
+  max-width:110px;text-align:right;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 .game-date{color:var(--txt-faint);font-size:12.5px;white-space:nowrap}
 .games-empty{color:var(--txt-dim);padding:24px;text-align:center}
 
@@ -353,6 +364,15 @@ body.reviewing .topbar{padding:6px 14px}
 .side-panel[hidden]{display:none !important}
 #panel-overview{overflow:hidden}
 
+.rep-end{
+  text-align:center;font-size:13.5px;font-weight:800;padding:10px 12px 4px;
+  letter-spacing:.01em;line-height:1.25;
+}
+.rep-end[hidden]{display:none !important}
+.rep-end.end-win{color:#a7d977}
+.rep-end.end-loss{color:#ff9182}
+.rep-end.end-draw,.rep-end.end-neutral{color:var(--txt-dim)}
+.rep-end.end-neutral{color:var(--txt)}
 .report{padding:10px 12px 6px;flex:none}
 .report-placeholder{
   margin:0;padding:16px 14px;color:var(--txt-faint);font-size:13px;font-style:italic;

@@ -1,13 +1,17 @@
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
 import { EnginePool, prefetchEngine, ENGINE_MODES } from './engine.js';
-import { icon, colorOf, labelOf } from './icons.js';
+import { icon, colorOf, labelOf, timeClassIcon, timeClassLabel } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
-import { fetchRecentGames, fetchPlayers, summarise, gameIdFromUrl } from './chesscom.js';
+import {
+  fetchRecentGames, fetchPlayers, summarise, gameIdFromUrl,
+  describeEnd, describeEndFromHeaders,
+} from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
   askCoach, buildGameOverviewPrompt, buildMovePrompt,
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
+import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
 import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
 import { APP_VERSION } from './version.js';
@@ -308,12 +312,15 @@ async function renderGames(user, games) {
       const card = document.createElement('button');
       card.className = 'game-card';
       card.innerHTML = `
-        <div class="game-tc">${s.timeControl}<br>${s.timeClass}</div>
+        <div class="game-tc" title="${esc(s.timeControl ? `${s.timeControl} · ${timeClassLabel(s.timeClass)}` : timeClassLabel(s.timeClass))}">${timeClassIcon(s.timeClass)}<span>${esc(timeClassLabel(s.timeClass))}</span></div>
         <div class="game-players">
           <span class="game-side">${avatarHtml(s.white, true, 'gavatar')}${titleBadge(s.white.title)}<span class="pname">${esc(s.white.name)}</span> <span class="game-elo">${s.white.rating ?? ''}</span></span>
           <span class="game-side">${avatarHtml(s.black, false, 'gavatar')}${titleBadge(s.black.title)}<span class="pname">${esc(s.black.name)}</span> <span class="game-elo">${s.black.rating ?? ''}</span></span>
         </div>
-        <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
+        <span class="game-res-col">
+          <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
+          ${s.shortHow ? `<span class="game-how">${esc(s.shortHow)}</span>` : ''}
+        </span>
         <span class="game-date">${s.date ? s.date.toLocaleDateString() : ''}</span>`;
       card.onclick = () => {
         if (!s.id) return;
@@ -385,6 +392,22 @@ function startReview(pgn, meta, opts = {}) {
   if (!state.meta.black.title && headers.BlackTitle) state.meta.black.title = headers.BlackTitle;
   state.meta.opening = headers.ECOUrl ? prettyOpening(headers.ECOUrl) : (headers.Opening || null);
   state.meta.eco = headers.ECO || null;
+  if (!state.meta.headline) {
+    const end = describeEndFromHeaders(headers, {
+      whiteName: state.meta.white.name,
+      blackName: state.meta.black.name,
+      meIsWhite: state.meta.meIsWhite,
+    });
+    if (end.headline) {
+      state.meta.result = state.meta.result || end.result;
+      state.meta.how = end.how;
+      state.meta.shortHow = end.shortHow;
+      state.meta.headline = end.headline;
+    } else {
+      const inferred = inferEndFromBoard(replay, state.meta);
+      if (inferred) Object.assign(state.meta, inferred);
+    }
+  }
   state.flipped = meta ? !meta.meIsWhite : false;
   state.talliesExpanded = false;
   state.tallyCursor = {};
@@ -418,6 +441,28 @@ function parseHeaders(pgn) {
   const h = {};
   for (const m of pgn.matchAll(/\[(\w+)\s+"([^"]*)"\]/g)) h[m[1]] = m[2];
   return h;
+}
+
+/** Last-resort when API/PGN lack termination — mate / stalemate only. */
+function inferEndFromBoard(chess, meta) {
+  if (!chess) return null;
+  const opts = {
+    whiteName: meta.white?.name || 'White',
+    blackName: meta.black?.name || 'Black',
+    meIsWhite: meta?.meIsWhite,
+  };
+  if (chess.isCheckmate()) {
+    const whiteWon = chess.turn() === 'b';
+    return describeEnd(
+      whiteWon ? 'win' : 'checkmated',
+      whiteWon ? 'checkmated' : 'win',
+      opts,
+    );
+  }
+  if (chess.isStalemate()) {
+    return describeEnd('stalemate', 'stalemate', opts);
+  }
+  return null;
 }
 function prettyOpening(url) {
   const slug = url.split('/').pop() || '';
@@ -705,6 +750,21 @@ function jumpToClass(cls, color) {
   if (row) row.classList.add('active');
 }
 
+function renderEndBanner() {
+  const endEl = $('rep-end');
+  if (!endEl) return;
+  const headline = state.meta?.headline || '';
+  endEl.hidden = !headline;
+  endEl.textContent = headline;
+  endEl.className = 'rep-end' + (
+    !headline ? ''
+    : state.meta?.meIsWhite == null ? ' end-neutral'
+    : state.meta?.result === 'win' ? ' end-win'
+    : state.meta?.result === 'loss' ? ' end-loss'
+    : ' end-draw'
+  );
+}
+
 function renderReport() {
   const done = state.reports.filter(Boolean);
   if (!done.length) {
@@ -889,7 +949,7 @@ async function goto(ply, opts = {}) {
 }
 function renderAll() {
   renderBoard(); renderPlayers(); renderEvalBar();
-  renderMoves(); renderDetail(); renderReport(); renderGraph();
+  renderMoves(); renderDetail(); renderEndBanner(); renderReport(); renderGraph();
   syncNavControls();
   syncCoachUi();
 }
@@ -1178,8 +1238,16 @@ async function runCoachAnalyze() {
   setCoachGenerating();
 
   let prompt;
+  let images;
   try {
-    prompt = state.ply === 0 ? makeOverviewPrompt() : makeMovePrompt();
+    if (state.ply === 0) {
+      prompt = makeOverviewPrompt();
+      images = undefined;
+    } else {
+      const boards = await makeMoveBoardImages();
+      images = boards.images;
+      prompt = makeMovePrompt({ hasBoardImages: !!images?.length });
+    }
   } catch (ex) {
     state.coachBusy = false;
     state.coachTargetKey = null;
@@ -1189,7 +1257,7 @@ async function runCoachAnalyze() {
   }
 
   try {
-    const text = await askCoach(prompt, ac.signal);
+    const text = await askCoach(prompt, ac.signal, images);
     if (reqId !== state.coachReqId) return;
     const cleaned = scrubCoachText(text);
     state.coachCache.set(cacheKey, cleaned);
@@ -1205,6 +1273,26 @@ async function runCoachAnalyze() {
     state.coachTargetKey = null;
     setCoachPlaceholder(ex.message || 'Coach request failed.', true);
     syncCoachUi();
+  }
+}
+
+async function makeMoveBoardImages() {
+  const idx = state.ply - 1;
+  const mv = state.moves[idx];
+  if (!mv) return { images: undefined };
+  try {
+    await prefetchPieces();
+    const flip = state.flipped;
+    const before = await fenToPngBase64(mv.fenBefore, { flipped: flip });
+    const after = await fenToPngBase64(mv.fenAfter, {
+      flipped: flip,
+      lastFrom: mv.from,
+      lastTo: mv.to,
+    });
+    return { images: [before, after] };
+  } catch (_) {
+    // Text-only fallback if canvas/pieces fail
+    return { images: undefined };
   }
 }
 
@@ -1225,7 +1313,8 @@ function makeOverviewPrompt() {
     accs[state.moves[i].color].push(r.accuracy);
   });
   const aw = gameAccuracy(accs.w), ab = gameAccuracy(accs.b);
-  const result = state.meta.result
+  const result = state.meta.headline
+    || state.meta.result
     || (state.meta.meIsWhite == null ? 'see PGN' : state.meta.result);
 
   return buildGameOverviewPrompt({
@@ -1245,7 +1334,7 @@ function makeOverviewPrompt() {
   });
 }
 
-function makeMovePrompt() {
+function makeMovePrompt(opts = {}) {
   const idx = state.ply - 1;
   const mv = state.moves[idx];
   const rep = state.reports[idx];
@@ -1312,6 +1401,7 @@ function makeMovePrompt() {
     wAfter: rep?.wAfter ?? null,
     drop: rep?.drop ?? null,
     sacrifice: !!rep?.sacrifice,
+    hasBoardImages: !!opts.hasBoardImages,
   });
 }
 
@@ -1587,5 +1677,6 @@ function initVersion() {
 // deep-link + browser back/forward
 window.addEventListener('popstate', () => { applyRoute(); });
 prefetchSounds();
+prefetchPieces().catch(() => {});
 initVersion();
 applyRoute();

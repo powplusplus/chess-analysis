@@ -42,3 +42,49 @@ export function icon(cls, useVar = true) {
 
 export function colorOf(cls) { return (CLASSES[cls] || {}).raw || '#888'; }
 export function labelOf(cls) { return (CLASSES[cls] || {}).label || ''; }
+
+/* Chess.com-style time-class glyphs for the games list. */
+const TC_GLYPHS = {
+  bullet: `
+    <path fill="currentColor" d="M10.2 4.2 7.4 14.6h4.1L9.2 22.2l9.4-12.2h-4.4L17.8 4.2z"/>
+    <path fill="currentColor" d="M20.8 6.4 18.8 13.6h2.9L19.8 19.2l6.6-8.6h-3.1L25.8 6.4z" opacity=".72"/>`,
+  blitz: `<path fill="currentColor" d="M13.2 3.2 9.6 14.8h5.2L12.4 24.8l11.2-14.6h-5.4L22.4 3.2z"/>`,
+  rapid: `
+    <circle cx="14" cy="14" r="8.2" fill="none" stroke="currentColor" stroke-width="2.2"/>
+    <path d="M14 8.2v6.2l4.2 2.4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M20.6 6.2 22.8 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    <circle cx="22.2" cy="4.6" r="1.6" fill="currentColor"/>`,
+  daily: `
+    <circle cx="14" cy="14" r="5.2" fill="currentColor"/>
+    <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <path d="M14 3.2v2.4M14 22.4v2.4M3.2 14h2.4M22.4 14h2.4"/>
+      <path d="m6.4 6.4 1.7 1.7M19.9 19.9l1.7 1.7M19.9 6.4l1.7-1.7M6.4 21.6l1.7-1.7"/>
+    </g>`,
+  classical: `
+    <path d="M9.2 4.2h9.6v2.2H9.2zM10.4 6.4h7.2l-1.8 5.6c1.6 1 2.6 2.6 2.6 4.6 0 3-2.4 5.4-5.4 5.4s-5.4-2.4-5.4-5.4c0-2 1-3.6 2.6-4.6L10.4 6.4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M14 16.2v3.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
+  game: `
+    <circle cx="14" cy="14" r="8.2" fill="none" stroke="currentColor" stroke-width="2.2"/>
+    <path d="M14 8.2v6.2l3.6 2.1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`,
+};
+
+const TC_LABELS = {
+  bullet: 'Bullet',
+  blitz: 'Blitz',
+  rapid: 'Rapid',
+  daily: 'Daily',
+  classical: 'Classical',
+  game: 'Game',
+};
+
+export function timeClassLabel(cls) {
+  const key = String(cls || 'game').toLowerCase();
+  return TC_LABELS[key] || (key.charAt(0).toUpperCase() + key.slice(1));
+}
+
+export function timeClassIcon(cls) {
+  const key = String(cls || 'game').toLowerCase();
+  const glyph = TC_GLYPHS[key] || TC_GLYPHS.game;
+  const label = timeClassLabel(key);
+  return `<svg class="tc-ico" viewBox="0 0 28 28" role="img" aria-label="${label}">${glyph}</svg>`;
+}
