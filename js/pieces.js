@@ -1,4 +1,4 @@
-// Chess.com default piece set (Neo) — PNGs mirrored under /pieces/neo/
+// Chess.com default piece set (Neo) - PNGs mirrored under /pieces/neo/
 // Board colours match Chess.com green theme CSS vars.
 
 const BASE = new URL('../pieces/neo/', import.meta.url);

@@ -1,4 +1,4 @@
-/* ============ tokens — Chess.com-inspired palette ============ */
+/* ============ tokens - Chess.com-inspired palette ============ */
 :root{
   --bg:#262421;
   --bg-2:#1f1e1c;
@@ -13,7 +13,7 @@
   --accent-hi:#95d156;
   --accent-press:#6a9a3a;
 
-  /* Vibrant Chess.com-style green — a1 dark, h1 light */
+  /* Vibrant Chess.com-style green - a1 dark, h1 light */
   --sq-light:#f5f5c0;
   --sq-dark:#5fa034;
   --sq-coord-light:#f5f5c0;
@@ -171,6 +171,7 @@ body.reviewing{overflow:hidden}
 body.reviewing .topbar{padding:6px 14px}
 .screen-review{
   --sidebar-w:380px;
+  --coach-w:300px;
   --eval-w:18px;
   /* Measured chrome: topbar (padding + brand mark) and the board column's
      players + controls + row gaps. Wrong values here overflow the viewport. */
@@ -183,7 +184,7 @@ body.reviewing .topbar{padding:6px 14px}
   box-sizing:border-box;overflow:hidden;
 }
 .board-col{
-  flex:1 1 auto;min-width:0;min-height:0;display:flex;justify-content:flex-end;align-items:center;
+  flex:1 1 auto;min-width:0;min-height:0;display:flex;justify-content:center;align-items:center;
 }
 .board-area{
   display:grid;
@@ -192,7 +193,7 @@ body.reviewing .topbar{padding:6px 14px}
   column-gap:8px;row-gap:4px;
   width:min(
     100%,
-    calc(100vw - var(--rail) - var(--sidebar-w) - 40px),
+    calc(100vw - var(--rail) - var(--sidebar-w) - var(--coach-w) - 54px),
     calc(var(--board-max) + var(--eval-w) + 8px)
   );
   max-height:100%;
@@ -278,7 +279,7 @@ body.reviewing .topbar{padding:6px 14px}
 .ctl.on{color:var(--accent-hi)}
 .ctl-group{display:flex;gap:3px}
 
-/* ============ sidebar — Chess.com Game Review panel ============ */
+/* ============ sidebar - Chess.com Game Review panel ============ */
 .sidebar{
   width:var(--sidebar-w);flex:none;
   background:var(--panel);border-radius:var(--radius);overflow:hidden;
@@ -325,7 +326,7 @@ body.reviewing .topbar{padding:6px 14px}
   flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;
 }
 .side-panel[hidden]{display:none !important}
-#panel-overview{overflow-y:auto}
+#panel-overview{overflow:hidden}
 
 .report{padding:10px 12px 6px;flex:none}
 .report-placeholder{
@@ -404,13 +405,17 @@ body.reviewing .topbar{padding:6px 14px}
 .move-detail .md-name{font-weight:800;font-size:13.5px}
 .move-detail .md-best{color:var(--txt);font-family:var(--mono);font-size:12px}
 
-/* ============ coach (always visible under tabs) ============ */
+/* ============ coach (left of board) ============ */
 .coach{
-  border-top:1px solid var(--line);flex:0 1 42%;min-height:148px;max-height:48%;
-  background:#221f1c;display:flex;flex-direction:column;overflow:hidden;
+  width:var(--coach-w);flex:none;
+  background:var(--panel);border-radius:var(--radius);overflow:hidden;
+  display:flex;flex-direction:column;
+  height:100%;max-height:100%;align-self:stretch;
+  box-shadow:0 2px 8px rgba(0,0,0,.3);
 }
 .coach-head{
-  display:flex;align-items:center;gap:10px;padding:10px 12px 6px;flex:none;
+  display:flex;align-items:center;gap:10px;padding:12px 14px 8px;flex:none;
+  background:#262421;border-bottom:1px solid var(--line);
 }
 .coach-avatar{
   width:44px;height:44px;border-radius:50%;object-fit:cover;object-position:center top;
@@ -420,14 +425,19 @@ body.reviewing .topbar{padding:6px 14px}
 .coach-title{font-size:13.5px;font-weight:800;letter-spacing:-.01em}
 .coach-sub{margin:1px 0 0;font-size:11.5px;color:var(--txt-faint);font-weight:700}
 .coach-body{
-  padding:0 12px 12px;overflow-y:auto;font-size:13px;line-height:1.55;color:var(--txt-dim);
-  flex:1;min-height:0;
+  padding:12px 14px 14px;overflow-y:auto;font-size:13px;line-height:1.55;color:var(--txt-dim);
+  flex:1;min-height:0;background:#221f1c;
 }
 .coach-body p{margin:0 0 .7em}
 .coach-body p:last-child{margin-bottom:0}
 .coach-body .coach-placeholder{color:var(--txt-faint);font-style:italic}
 .coach-body.thinking{color:var(--txt-faint)}
 .coach-body .coach-err{color:var(--c-blunder)}
+.coach-actions{
+  flex:none;padding:10px 14px 12px;background:#262421;border-top:1px solid var(--line);
+}
+.coach-actions .btn{width:100%}
+.coach-actions .btn:disabled{opacity:.45;cursor:not-allowed;filter:none}
 
 .foot{
   max-width:560px;margin:18px auto 28px;padding:0 20px;
@@ -445,15 +455,22 @@ body.reviewing .topbar{padding:6px 14px}
 .piece-flyer .piece-img{width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}
 
 /* ============ responsive ============ */
+@media (max-width:1100px){
+  .screen-review{--coach-w:260px}
+}
 @media (max-width:980px){
   .screen-review{
     flex-direction:column;align-items:center;padding:10px;gap:12px;
     height:auto;min-height:calc(100dvh - var(--topbar-h));
     overflow:auto;
     --board-max:min(560px, calc(100dvh - var(--topbar-h) - 280px));
+    --coach-w:min(100%,480px);
   }
   body.reviewing{overflow:auto}
-  .board-col{justify-content:center;flex:0 0 auto}
+  .board-col{justify-content:center;flex:0 0 auto;order:1}
+  .coach{
+    width:min(100%,480px);height:min(36dvh,320px);max-height:36dvh;flex:none;order:3;
+  }
   .board-area{
     width:min(
       100%,
@@ -462,8 +479,9 @@ body.reviewing .topbar{padding:6px 14px}
     );
   }
   .sidebar{
-    width:min(100%,480px);height:min(48dvh,440px);max-height:48dvh;flex:none;
+    width:min(100%,480px);height:min(48dvh,440px);max-height:48dvh;flex:none;order:2;
   }
+  #panel-overview{overflow-y:auto}
 }
 @media (max-width:720px){
   .rail{display:none}
@@ -475,6 +493,7 @@ body.reviewing .topbar{padding:6px 14px}
     width:min(100%, calc(100vw - 16px), calc(var(--board-max) + var(--eval-w) + 8px));
   }
   .sidebar{height:min(50dvh,460px);max-height:50dvh;width:100%}
+  .coach{width:100%;height:min(40dvh,360px);max-height:40dvh}
 }
 @media (max-width:520px){
   .hero{margin-top:6vh}

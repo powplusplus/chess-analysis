@@ -38,7 +38,7 @@ export function summarise(game, user) {
   return {
     white: { name: w.username || 'White', rating: w.rating },
     black: { name: b.username || 'Black', rating: b.rating },
-    meIsWhite, opponent: them.username || '—', result,
+    meIsWhite, opponent: them.username || '-', result,
     timeClass: game.time_class || 'game',
     timeControl: secs ? `${Math.round(secs / 60)} min` : (game.time_control || ''),
     date: game.end_time ? new Date(game.end_time * 1000) : null,

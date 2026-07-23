@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Game Review — free chess analysis with Stockfish</title>
+<title>Game Review - free chess analysis with Stockfish</title>
 <meta name="description" content="Paste a username, pick a game, get a full move-by-move review: accuracy, brilliant moves, blunders and an evaluation timeline. Stockfish runs in your browser.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2381b64c'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%23fff'%3E%E2%99%9E%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -37,7 +37,7 @@
       <div class="hero">
         <div class="hero-badge">Free · runs in your browser</div>
         <h1>Game Review</h1>
-        <p class="hero-sub">Type a Chess.com username. Pick a game. Stockfish runs locally — nothing uploaded.</p>
+        <p class="hero-sub">Type a Chess.com username. Pick a game. Stockfish runs locally, nothing uploaded.</p>
 
         <form class="search-row" id="form-user">
           <input id="input-user" class="input" type="text" placeholder="Chess.com username" autocomplete="username" spellcheck="false" required>
@@ -68,6 +68,22 @@
 
     <!-- ───────────────── review ───────────────── -->
     <main class="screen screen-review" id="screen-review" hidden>
+
+      <aside class="coach" id="coach" aria-label="Coach">
+        <div class="coach-head">
+          <img class="coach-avatar" src="assets/magnus.png" width="48" height="48" alt="Coach">
+          <div class="coach-titles">
+            <h3 class="coach-title">Coach</h3>
+            <p class="coach-sub" id="coach-sub">Game overview</p>
+          </div>
+        </div>
+        <div class="coach-body" id="coach-body">
+          <p class="coach-placeholder">Load a game to get coaching.</p>
+        </div>
+        <div class="coach-actions">
+          <button class="btn btn-primary btn-sm" id="btn-coach-analyze" type="button" disabled>Analyze</button>
+        </div>
+      </aside>
 
       <section class="board-col">
         <div class="board-area">
@@ -135,18 +151,18 @@
               </div>
 
               <div class="row row-acc">
-                <span class="acc acc-w" id="acc-white">—</span>
+                <span class="acc acc-w" id="acc-white">-</span>
                 <span class="cell-mid">Accuracy</span>
-                <span class="acc acc-b" id="acc-black">—</span>
+                <span class="acc acc-b" id="acc-black">-</span>
               </div>
 
               <div class="tallies" id="tallies"></div>
               <button class="tally-more" id="tally-more" type="button" hidden>Show more</button>
 
               <div class="row row-rating">
-                <span class="rating rating-w" id="rating-white">—</span>
+                <span class="rating rating-w" id="rating-white">-</span>
                 <span class="cell-mid">Game Rating</span>
-                <span class="rating rating-b" id="rating-black">—</span>
+                <span class="rating rating-b" id="rating-black">-</span>
               </div>
 
               <div class="opening" id="opening"></div>
@@ -161,19 +177,6 @@
             <div class="move-detail" id="move-detail"></div>
           </div>
         </div>
-
-        <section class="coach" id="coach" aria-label="Coach">
-          <div class="coach-head">
-            <img class="coach-avatar" src="assets/magnus.png" width="48" height="48" alt="Coach">
-            <div class="coach-titles">
-              <h3 class="coach-title">Coach</h3>
-              <p class="coach-sub" id="coach-sub">Game overview</p>
-            </div>
-          </div>
-          <div class="coach-body" id="coach-body">
-            <p class="coach-placeholder">Load a game to get coaching.</p>
-          </div>
-        </section>
       </aside>
     </main>
 

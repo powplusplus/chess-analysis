@@ -1,11 +1,11 @@
-# Game Review — chess analysis in the browser
+# Game Review - chess analysis in the browser
 
 A Chess.com-style game review: enter a username, pick a recent game, and get a
 move-by-move report with Brilliant / Great / Best / Excellent / Good / Book /
 Inaccuracy / Mistake / Miss / Blunder badges, per-side accuracy, an estimated
 game rating, an evaluation timeline and a move list.
 
-Stockfish runs locally in Web Workers — no server for engine analysis.
+Stockfish runs locally in Web Workers - no server for engine analysis.
 Coach Overview uses Gemma 4 31B (thinking) via the Google Generative Language API.
 
 ## Run it locally
@@ -23,12 +23,12 @@ For Coach Overview on a static server, copy the example config and paste your ke
 Or run `vercel dev` with `GOOGLE_API_KEY` in `.env` so `/api/coach` proxies the call.
 ## Deploy to Vercel
 
-Option A — CLI (fastest):
+Option A - CLI (fastest):
 
     npm i -g vercel
     vercel --prod          # accept defaults; it's a static site, no build step
 
-Option B — dashboard: vercel.com → Add New → Project → drag this folder in.
+Option B - dashboard: vercel.com → Add New → Project → drag this folder in.
 
 The project name decides the URL. `chess.vercel.app` and `gamereview.vercel.app`
 are global names and are very likely taken; Vercel will fall back to
@@ -54,13 +54,13 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 Every position gets a MultiPV-2 search. A move's cost is the drop in win
 percentage compared with the engine's best move:
 
-* **Best** — matches the engine's first choice
+* **Best** - matches the engine's first choice
 * **Excellent** < 2% lost · **Good** < 5% · **Inaccuracy** < 10% · **Mistake** < 20% · **Blunder** ≥ 20%
-* **Miss** — you were winning (≥75%) and dropped to level or worse
-* **Great** — you found the move, and the second-best was ≥10% worse
-* **Brilliant** — a Great-quality move that also gives up ≥1.5 pawns of material
+* **Miss** - you were winning (≥75%) and dropped to level or worse
+* **Great** - you found the move, and the second-best was ≥10% worse
+* **Brilliant** - a Great-quality move that also gives up ≥1.5 pawns of material
   in the engine's own line, in a position that wasn't already winning
-* **Book** — the game is still following a known opening line
+* **Book** - the game is still following a known opening line
 
 Accuracy per move is `103.1668·e^(-0.04354·drop) − 3.1669`; the game figure blends
 the arithmetic and harmonic means. Estimated rating is fitted so ~76% accuracy
@@ -74,4 +74,4 @@ Stockfish is GPLv3; this app loads the JS build by Niklas Fiekas from jsDelivr
 and does not redistribute it. Move generation is chess.js (BSD). Board colours
 match Chess.com's green theme. Piece artwork under `pieces/neo/` is Chess.com's
 default Neo set, cached locally for offline use. Layout and analysis code here
-are original — this is not affiliated with Chess.com.
+are original - this is not affiliated with Chess.com.

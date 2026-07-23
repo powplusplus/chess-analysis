@@ -69,7 +69,7 @@ class Engine {
   _bootOptions() {
     if (this._booted) return;
     this._booted = true;
-    // stockfish.js@10 asm build: Hash max is 16 — higher values hang the engine.
+    // stockfish.js@10 asm build: Hash max is 16 - higher values hang the engine.
     this.send('setoption name MultiPV value ' + MULTIPV);
     this.send('setoption name Hash value 16');
     this.send('isready');

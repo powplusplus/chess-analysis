@@ -14,7 +14,7 @@ async function loadApiKey() {
 
 const STYLE = `You are Magnus, a sharp chess coach reviewing a game.
 Voice rules (strict):
-- No em dashes. Never use — or –. Use commas, periods, or colons.
+- No em dashes or en dashes. Use commas, periods, or colons.
 - Prefer "it's not X, it's Y" when correcting a misconception.
 - Short paragraphs. Direct. No fluff. No emoji. No markdown headings.
 - 2 to 4 short paragraphs max.
@@ -80,7 +80,7 @@ If the move was good, say why. If it was wrong, name the idea that failed and th
 }
 
 export async function askCoach(prompt, signal) {
-  // 1) Same-origin Vercel proxy (preferred — key stays on server)
+  // 1) Same-origin Vercel proxy (preferred - key stays on server)
   let proxyMiss = false;
   try {
     const r = await fetch('/api/coach', {
@@ -105,7 +105,7 @@ export async function askCoach(prompt, signal) {
     proxyMiss = true;
   }
 
-  // 2) Local static fallback (js/coach-config.js — gitignored)
+  // 2) Local static fallback (js/coach-config.js - gitignored)
   const key = await loadApiKey();
   if (!key || key.includes('your_google')) {
     throw new Error('Coach needs GOOGLE_API_KEY on Vercel (Settings → Environment Variables), or js/coach-config.js locally.');

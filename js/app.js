@@ -29,9 +29,10 @@ const state = {
   animating: false,
   analysisToken: 0,
   coachAbort: null,
-  coachTimer: null,
   coachCache: new Map(),
   coachReqId: 0,
+  coachBusy: false,
+  coachTargetKey: null,
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -79,7 +80,7 @@ $('form-pgn').onsubmit = e => {
 
 /* ─────────────────── game picker ─────────────────── */
 function renderGames(user, games) {
-  $('games-title').textContent = `Recent games — ${user}`;
+  $('games-title').textContent = `Recent games - ${user}`;
   const list = $('games-list');
   list.innerHTML = '';
   games.forEach(g => {
@@ -137,12 +138,13 @@ function startReview(pgn, meta) {
   state.tallyCursor = {};
   state.coachCache = new Map();
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
-  if (state.coachTimer) { clearTimeout(state.coachTimer); state.coachTimer = null; }
+  state.coachBusy = false;
+  state.coachTargetKey = null;
 
   show('review');
   buildBoard();
   renderAll();
-  setCoachPlaceholder('Engine analysing… coach waits for the full report.');
+  setCoachPlaceholder('Engine analysing. Press Analyze when the report is ready.');
   runAnalysis();
 }
 
@@ -185,7 +187,7 @@ function renderBoard(opts = {}) {
   for (let i = 0; i < 64; i++) {
     const name = squareAt(i);
     const el = squares[i];
-    // a1 is dark — (fileIndex + rank) even ⇒ light
+    // a1 is dark - (fileIndex + rank) even ⇒ light
     const isLight = (FILES.indexOf(name[0]) + parseInt(name[1], 10)) % 2 === 0;
     el.className = 'sq ' + (isLight ? 'light' : 'dark');
     if (last && (name === last.from || name === last.to)) el.classList.add('hl');
@@ -324,7 +326,7 @@ function renderEvalBar() {
   bar.classList.toggle('flipped', state.flipped);
   if (cp === null) {
     fill.style.height = '50%';
-    num.textContent = '—';
+    num.textContent = '-';
     bar.classList.remove('neg');
     return;
   }
@@ -365,7 +367,7 @@ function renderDetail() {
   if (state.ply === 0) { el.innerHTML = '<span>Starting position. Use ← and → to step through.</span>'; return; }
   const mv = state.moves[state.ply - 1];
   const rep = state.reports[state.ply - 1];
-  if (!rep) { el.innerHTML = `<span>${mv.san} — not analysed yet.</span>`; return; }
+  if (!rep) { el.innerHTML = `<span>${mv.san} - not analysed yet.</span>`; return; }
 
   const evalTxt = fmtCp(rep.cpAfter);
   let best = '';
@@ -442,10 +444,10 @@ function renderReport() {
   });
 
   const aw = gameAccuracy(accs.w), ab = gameAccuracy(accs.b);
-  $('acc-white').textContent = aw === null ? '—' : aw.toFixed(1);
-  $('acc-black').textContent = ab === null ? '—' : ab.toFixed(1);
-  $('rating-white').textContent = estimateRating(aw) ?? '—';
-  $('rating-black').textContent = estimateRating(ab) ?? '—';
+  $('acc-white').textContent = aw === null ? '-' : aw.toFixed(1);
+  $('acc-black').textContent = ab === null ? '-' : ab.toFixed(1);
+  $('rating-white').textContent = estimateRating(aw) ?? '-';
+  $('rating-black').textContent = estimateRating(ab) ?? '-';
 
   const order = [...TALLY_PRIMARY.slice(0, 3), ...TALLY_SECONDARY, ...TALLY_PRIMARY.slice(3)];
   // Chess.com order: Brilliant, Great, Best, [Excellent, Good, Book, Inaccuracy], Mistake, Miss, Blunder
@@ -453,11 +455,9 @@ function renderReport() {
   t.innerHTML = '';
   for (const cls of order) {
     const w = counts.w[cls] || 0, b = counts.b[cls] || 0;
-    const secondary = TALLY_SECONDARY.includes(cls);
     const row = document.createElement('div');
-    row.className = 'tally' + (secondary ? ' secondary' : '');
+    row.className = 'tally';
     row.dataset.cls = cls;
-    if (secondary && !state.talliesExpanded) row.hidden = true;
 
     const nW = document.createElement('button');
     nW.type = 'button';
@@ -488,13 +488,7 @@ function renderReport() {
     t.appendChild(row);
   }
 
-  const more = $('tally-more');
-  more.hidden = false;
-  more.textContent = state.talliesExpanded ? 'Show less' : 'Show more';
-  more.onclick = () => {
-    state.talliesExpanded = !state.talliesExpanded;
-    renderReport();
-  };
+  $('tally-more').hidden = true;
 
   const op = state.meta.opening;
   $('opening').innerHTML = op ? `Opening: <b>${esc(op)}</b>${state.meta.eco ? ' · ' + esc(state.meta.eco) : ''}` : '';
@@ -523,7 +517,7 @@ function renderGraph() {
 
   const anyEval = state.evals.some(Boolean);
   if (!anyEval) {
-    // Placeholder while engine warms / analyses — not a dead black box
+    // Placeholder while engine warms / analyses - not a dead black box
     g.fillStyle = '#d8d5d0';
     g.fillRect(0, h * 0.5, w, h * 0.5);
     g.strokeStyle = '#8c8a88';
@@ -603,7 +597,7 @@ async function goto(ply, opts = {}) {
 function renderAll() {
   renderBoard(); renderPlayers(); renderEvalBar();
   renderMoves(); renderDetail(); renderReport(); renderGraph();
-  scheduleCoach();
+  syncCoachUi();
 }
 
 /* ─────────────────── coach overview ─────────────────── */
@@ -639,42 +633,75 @@ function analysisReady() {
   return !state.running && state.reports.length && state.reports.every(Boolean);
 }
 
-function scheduleCoach() {
+function coachCacheKey() {
+  return state.analysisToken + ':' + state.ply;
+}
+
+function syncCoachUi() {
   $('coach-sub').textContent = coachSubtitle();
+  const btn = $('btn-coach-analyze');
+  const key = coachCacheKey();
+
+  // Scrub away mid-request -> cancel. Cache keeps finished replies.
+  if (state.coachBusy && state.coachTargetKey && state.coachTargetKey !== key) {
+    if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
+    state.coachBusy = false;
+    state.coachTargetKey = null;
+    state.coachReqId++;
+  }
+
+  const ready = analysisReady() && state.moves.length > 0;
+  btn.disabled = !ready || state.coachBusy;
+
   if (!state.moves.length) {
     setCoachPlaceholder('Load a game to get coaching.');
     return;
   }
   if (!analysisReady()) {
     setCoachPlaceholder(state.running
-      ? 'Engine analysing… coach waits for the full report.'
-      : 'Finish analysis first, then coach can talk.');
+      ? 'Engine analysing. Press Analyze when the report is ready.'
+      : 'Finish engine analysis first, then press Analyze.');
     return;
   }
 
-  const cacheKey = state.analysisToken + ':' + state.ply;
+  if (state.coachCache.has(key)) {
+    setCoachText(state.coachCache.get(key));
+    return;
+  }
+  if (state.coachBusy) {
+    setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
+    return;
+  }
+  setCoachPlaceholder(state.ply === 0
+    ? 'Press Analyze for a game overview.'
+    : 'Press Analyze for coaching on this move.');
+}
+
+async function runCoachAnalyze() {
+  if (!analysisReady() || state.coachBusy) return;
+  const cacheKey = coachCacheKey();
   if (state.coachCache.has(cacheKey)) {
     setCoachText(state.coachCache.get(cacheKey));
     return;
   }
 
-  if (state.coachTimer) clearTimeout(state.coachTimer);
-  setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
-  state.coachTimer = setTimeout(() => refreshCoach(cacheKey), 300);
-}
-
-async function refreshCoach(cacheKey) {
-  if (!analysisReady()) return;
   if (state.coachAbort) state.coachAbort.abort();
   const ac = new AbortController();
   state.coachAbort = ac;
   const reqId = ++state.coachReqId;
+  state.coachBusy = true;
+  state.coachTargetKey = cacheKey;
+  $('btn-coach-analyze').disabled = true;
+  setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
 
   let prompt;
   try {
     prompt = state.ply === 0 ? makeOverviewPrompt() : makeMovePrompt();
   } catch (ex) {
+    state.coachBusy = false;
+    state.coachTargetKey = null;
     setCoachPlaceholder(ex.message || 'Could not build coach prompt.', true);
+    syncCoachUi();
     return;
   }
 
@@ -683,17 +710,25 @@ async function refreshCoach(cacheKey) {
     if (reqId !== state.coachReqId) return;
     const cleaned = scrubCoachText(text);
     state.coachCache.set(cacheKey, cleaned);
+    state.coachBusy = false;
+    state.coachTargetKey = null;
     setCoachText(cleaned);
+    syncCoachUi();
   } catch (ex) {
     if (ex.name === 'AbortError') return;
     if (reqId !== state.coachReqId) return;
+    state.coachBusy = false;
+    state.coachTargetKey = null;
     setCoachPlaceholder(ex.message || 'Coach request failed.', true);
+    syncCoachUi();
   }
 }
 
+$('btn-coach-analyze').onclick = () => runCoachAnalyze();
+
 function scrubCoachText(text) {
   return String(text)
-    .replace(/\u2014|\u2013/g, ',')  // em/en dash → comma
+    .replace(/\u2014|\u2013/g, ',')  // em/en dash -> comma
     .replace(/\s+,/g, ',')
     .replace(/,\s*,/g, ',')
     .trim();
@@ -816,7 +851,8 @@ function stopAnalysis() {
   state.analysisToken++;
   if (state.pool) { state.pool.destroy(); state.pool = null; }
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
-  if (state.coachTimer) { clearTimeout(state.coachTimer); state.coachTimer = null; }
+  state.coachBusy = false;
+  state.coachTargetKey = null;
 }
 
 async function runAnalysis() {
