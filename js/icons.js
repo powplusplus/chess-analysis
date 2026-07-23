@@ -2,16 +2,16 @@
 // glyph. Drawn here rather than loaded so the app has no image dependencies.
 
 export const CLASSES = {
-  brilliant:  { label: 'Brilliant',  color: 'var(--c-brilliant)',  raw: '#26c2a3', glyph: 'bang2' },
-  great:      { label: 'Great',      color: 'var(--c-great)',      raw: '#749bbf', glyph: 'bang1' },
-  best:       { label: 'Best',       color: 'var(--c-best)',       raw: '#81b64c', glyph: 'star'  },
-  excellent:  { label: 'Excellent',  color: 'var(--c-excellent)',  raw: '#95bb4a', glyph: 'check' },
-  good:       { label: 'Good',       color: 'var(--c-good)',       raw: '#96af8b', glyph: 'check' },
-  book:       { label: 'Book',       color: 'var(--c-book)',       raw: '#a88865', glyph: 'book'  },
-  inaccuracy: { label: 'Inaccuracy', color: 'var(--c-inaccuracy)', raw: '#f7c631', glyph: 'quest_bang' },
-  mistake:    { label: 'Mistake',    color: 'var(--c-mistake)',    raw: '#ffa459', glyph: 'quest' },
-  miss:       { label: 'Miss',       color: 'var(--c-miss)',       raw: '#ff7769', glyph: 'cross' },
-  blunder:    { label: 'Blunder',    color: 'var(--c-blunder)',    raw: '#fa412d', glyph: 'quest2' },
+  brilliant:  { label: 'Brilliant',  color: 'var(--c-brilliant)',  raw: '#1ec8c0', glyph: 'bang2' },
+  great:      { label: 'Great',      color: 'var(--c-great)',      raw: '#5ba3d9', glyph: 'bang1' },
+  best:       { label: 'Best',       color: 'var(--c-best)',       raw: '#8ecf4a', glyph: 'star'  },
+  excellent:  { label: 'Excellent',  color: 'var(--c-excellent)',  raw: '#a5d44f', glyph: 'check' },
+  good:       { label: 'Good',       color: 'var(--c-good)',       raw: '#9fc277', glyph: 'check' },
+  book:       { label: 'Book',       color: 'var(--c-book)',       raw: '#c49a6c', glyph: 'book'  },
+  inaccuracy: { label: 'Inaccuracy', color: 'var(--c-inaccuracy)', raw: '#ffd12a', glyph: 'quest_bang' },
+  mistake:    { label: 'Mistake',    color: 'var(--c-mistake)',    raw: '#ff9a2e', glyph: 'quest' },
+  miss:       { label: 'Miss',       color: 'var(--c-miss)',       raw: '#ff7a7a', glyph: 'cross' },
+  blunder:    { label: 'Blunder',    color: 'var(--c-blunder)',    raw: '#f03530', glyph: 'quest2' },
 };
 
 export const ORDER = ['brilliant','great','best','excellent','good','book','inaccuracy','mistake','miss','blunder'];

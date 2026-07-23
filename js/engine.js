@@ -2,17 +2,64 @@
 // positions can be crunched at once.
 
 const MULTIPV = 2;
+const SF_URL = 'https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.js';
+
+let prefetchPromise = null;
+
+/** Download Stockfish into the HTTP cache; reports {loaded,total,pct}. */
+export function prefetchStockfish(onProgress) {
+  if (prefetchPromise) return prefetchPromise;
+  prefetchPromise = (async () => {
+    const res = await fetch(SF_URL);
+    if (!res.ok) throw new Error('Stockfish download failed (' + res.status + ')');
+    const total = Number(res.headers.get('content-length')) || 0;
+    if (!res.body || !res.body.getReader) {
+      await res.arrayBuffer();
+      onProgress?.({ loaded: total || 1, total: total || 1, pct: 100 });
+      return;
+    }
+    const reader = res.body.getReader();
+    let loaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      loaded += value.byteLength;
+      const pct = total ? Math.min(99, Math.round((loaded / total) * 100)) : Math.min(90, Math.round(loaded / 30000));
+      onProgress?.({ loaded, total, pct });
+    }
+    onProgress?.({ loaded: total || loaded, total: total || loaded, pct: 100 });
+  })().catch(err => {
+    prefetchPromise = null;
+    throw err;
+  });
+  return prefetchPromise;
+}
 
 class Engine {
   constructor() {
     this.worker = new Worker(new URL('./sf-worker.js', import.meta.url));
     this.pending = null;
     this.readyResolve = null;
-    this.ready = new Promise(res => { this.readyResolve = res; });
+    this.readyReject = null;
+    this.ready = new Promise((res, rej) => {
+      this.readyResolve = res;
+      this.readyReject = rej;
+    });
     this._booted = false;
+    this._readyTimer = setTimeout(() => {
+      if (this.readyResolve) {
+        this.readyReject?.(new Error('Stockfish start timeout'));
+        this.readyResolve = null;
+        this.readyReject = null;
+      }
+    }, 60000);
     this.worker.onmessage = e => this._onLine(typeof e.data === 'string' ? e.data : String(e.data));
-    this.worker.onerror = () => {
-      if (this.readyResolve) { this.readyResolve(); this.readyResolve = null; }
+    this.worker.onerror = (err) => {
+      if (this.readyReject) {
+        this.readyReject(err?.message || 'worker error');
+        this.readyResolve = null;
+        this.readyReject = null;
+      }
     };
     this.send('uci');
   }
@@ -36,7 +83,17 @@ class Engine {
       return;
     }
     if (line.startsWith('readyok')) {
-      if (this.readyResolve) { this.readyResolve(); this.readyResolve = null; }
+      clearTimeout(this._readyTimer);
+      if (this.readyResolve) { this.readyResolve(); this.readyResolve = null; this.readyReject = null; }
+      return;
+    }
+    if (line.startsWith('error ')) {
+      clearTimeout(this._readyTimer);
+      if (this.readyReject) {
+        this.readyReject(new Error(line));
+        this.readyResolve = null;
+        this.readyReject = null;
+      }
       return;
     }
 
@@ -63,7 +120,6 @@ class Engine {
   analyse(fen, depth) {
     return new Promise((resolve, reject) => {
       if (this.pending) {
-        // Shouldn't happen with the pool; fail soft rather than deadlock.
         reject(new Error('engine busy'));
         return;
       }
@@ -74,7 +130,10 @@ class Engine {
     });
   }
 
-  destroy() { try { this.send('quit'); this.worker.terminate(); } catch (_) {} }
+  destroy() {
+    clearTimeout(this._readyTimer);
+    try { this.send('quit'); this.worker.terminate(); } catch (_) {}
+  }
 }
 
 function parseInfo(line) {
@@ -110,12 +169,7 @@ export class EnginePool {
   }
 
   async warmUp() {
-    await Promise.all(this.engines.map(e =>
-      Promise.race([
-        e.ready,
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Stockfish failed to start')), 20000)),
-      ])
-    ));
+    await Promise.all(this.engines.map(e => e.ready));
   }
 
   analyse(fen, depth) {

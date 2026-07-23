@@ -1,5 +1,5 @@
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
-import { EnginePool } from './engine.js';
+import { EnginePool, prefetchStockfish } from './engine.js';
 import { icon, colorOf, labelOf } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
 import { fetchRecentGames, summarise } from './chesscom.js';
@@ -7,6 +7,7 @@ import { pieceSvg } from './pieces.js';
 
 const $ = id => document.getElementById(id);
 const FILES = 'abcdefgh';
+const ANIM_MS = 160;
 
 const state = {
   chess: null,
@@ -21,6 +22,8 @@ const state = {
   running: false,
   talliesExpanded: false,
   tallyCursor: {},  // key -> move index last jumped to
+  animating: false,
+  analysisToken: 0,
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -159,7 +162,8 @@ function squareAt(index) {                       // index 0..63 in display order
   return file + rank;
 }
 
-function renderBoard() {
+function renderBoard(opts = {}) {
+  const { skipPieceOn } = opts;
   const fen = state.ply === 0 ? state.moves[0].fenBefore : state.moves[state.ply - 1].fenAfter;
   const pos = new Chess(fen);
   const squares = $('board').children;
@@ -169,7 +173,8 @@ function renderBoard() {
   for (let i = 0; i < 64; i++) {
     const name = squareAt(i);
     const el = squares[i];
-    const isLight = (FILES.indexOf(name[0]) + parseInt(name[1], 10)) % 2 === 1;
+    // a1 is dark — (fileIndex + rank) even ⇒ light
+    const isLight = (FILES.indexOf(name[0]) + parseInt(name[1], 10)) % 2 === 0;
     el.className = 'sq ' + (isLight ? 'light' : 'dark');
     if (last && (name === last.from || name === last.to)) el.classList.add('hl');
 
@@ -179,11 +184,64 @@ function renderBoard() {
     if (r === 7) html += `<span class="coord file">${name[0]}</span>`;
 
     const p = pos.get(name);
-    if (p) html += `<span class="piece-wrap">${pieceSvg(p.color, p.type)}</span>`;
-    if (rep && name === last.to) html += `<span class="badge">${icon(rep.cls, false)}</span>`;
+    if (p && name !== skipPieceOn) html += `<span class="piece-wrap">${pieceSvg(p.color, p.type)}</span>`;
+    if (rep && name === last.to && name !== skipPieceOn) html += `<span class="badge">${icon(rep.cls, false)}</span>`;
     el.innerHTML = html;
   }
-  drawArrow(rep);
+  drawArrow(skipPieceOn ? null : rep);
+}
+
+function sqCenter(sq) {
+  const board = $('board').getBoundingClientRect();
+  let f = FILES.indexOf(sq[0]), r = 8 - parseInt(sq[1], 10);
+  if (state.flipped) { f = 7 - f; r = 7 - r; }
+  const size = board.width / 8;
+  return {
+    x: board.left + f * size + size / 2,
+    y: board.top + r * size + size / 2,
+    size,
+  };
+}
+
+function animatePlyChange(fromPly, toPly) {
+  if (Math.abs(toPly - fromPly) !== 1) return Promise.resolve();
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return Promise.resolve();
+
+  const forward = toPly > fromPly;
+  const mv = state.moves[forward ? toPly - 1 : fromPly - 1];
+  if (!mv) return Promise.resolve();
+
+  const from = forward ? mv.from : mv.to;
+  const to = forward ? mv.to : mv.from;
+  const a = sqCenter(from), b = sqCenter(to);
+  if (!a.size) return Promise.resolve();
+
+  // Hide destination (forward) or origin piece while flyer moves
+  renderBoard({ skipPieceOn: forward ? to : from });
+
+  const flyer = document.createElement('div');
+  flyer.className = 'piece-flyer';
+  flyer.innerHTML = pieceSvg(mv.color, mv.piece);
+  const half = a.size / 2;
+  flyer.style.width = a.size + 'px';
+  flyer.style.height = a.size + 'px';
+  flyer.style.left = (a.x - half) + 'px';
+  flyer.style.top = (a.y - half) + 'px';
+  document.body.appendChild(flyer);
+
+  // Force layout, then slide
+  flyer.getBoundingClientRect();
+  flyer.style.transition = `transform ${ANIM_MS}ms cubic-bezier(.2,.7,.2,1)`;
+  flyer.style.transform = `translate(${b.x - a.x}px, ${b.y - a.y}px)`;
+
+  return new Promise(resolve => {
+    const done = () => {
+      flyer.remove();
+      resolve();
+    };
+    flyer.addEventListener('transitionend', done, { once: true });
+    setTimeout(done, ANIM_MS + 40);
+  });
 }
 
 function drawArrow(rep) {
@@ -334,17 +392,16 @@ function jumpToClass(cls, color) {
 
   const key = cls + ':' + (color || '*');
   const cur = state.tallyCursor[key];
-  let pos = idxs.indexOf(cur);
-  // Prefer next move after current ply when starting a new cycle
-  if (pos < 0) {
-    const after = idxs.findIndex(i => i + 1 > state.ply);
-    pos = after >= 0 ? after - 1 : -1;
+  let next;
+  // First click (or after leaving this class) → earliest matching move
+  if (cur === undefined || !idxs.includes(cur)) {
+    next = idxs[0];
+  } else {
+    next = idxs[(idxs.indexOf(cur) + 1) % idxs.length];
   }
-  const next = idxs[(pos + 1) % idxs.length];
   state.tallyCursor[key] = next;
-  goto(next + 1);
+  goto(next + 1, { animate: false });
 
-  // highlight active tally row briefly
   document.querySelectorAll('.tally.active').forEach(el => el.classList.remove('active'));
   const row = document.querySelector(`.tally[data-cls="${cls}"]`);
   if (row) row.classList.add('active');
@@ -451,6 +508,24 @@ function renderGraph() {
   g.fillStyle = '#3a3733';
   g.fillRect(0, 0, w, h);
 
+  const anyEval = state.evals.some(Boolean);
+  if (!anyEval) {
+    // Placeholder while engine warms / analyses — not a dead black box
+    g.fillStyle = '#d8d5d0';
+    g.fillRect(0, h * 0.5, w, h * 0.5);
+    g.strokeStyle = '#8c8a88';
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+    g.fillStyle = '#9b9590';
+    g.font = '600 11px ' + getComputedStyle(document.body).fontFamily;
+    g.textAlign = 'center';
+    g.fillText(state.running ? 'Analysing…' : 'Evaluation', w / 2, h / 2 - 8);
+    g.strokeStyle = '#81b64c';
+    g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x(state.ply), 0); g.lineTo(x(state.ply), h); g.stroke();
+    return;
+  }
+
   // white's area
   g.beginPath();
   g.moveTo(0, h);
@@ -493,8 +568,22 @@ $('graph').addEventListener('click', e => {
 });
 
 /* ─────────────────── navigation ─────────────────── */
-function goto(ply) {
-  state.ply = Math.max(0, Math.min(state.moves.length, ply));
+async function goto(ply, opts = {}) {
+  const { animate = true } = opts;
+  const next = Math.max(0, Math.min(state.moves.length, ply));
+  const prev = state.ply;
+  if (next === prev) { renderAll(); return; }
+
+  if (animate && !state.animating && Math.abs(next - prev) === 1) {
+    state.animating = true;
+    state.ply = next;
+    try { await animatePlyChange(prev, next); }
+    finally { state.animating = false; }
+    renderAll();
+    return;
+  }
+
+  state.ply = next;
   renderAll();
 }
 function renderAll() {
@@ -502,10 +591,10 @@ function renderAll() {
   renderMoves(); renderDetail(); renderReport(); renderGraph();
 }
 
-$('ctl-first').onclick = () => goto(0);
+$('ctl-first').onclick = () => goto(0, { animate: false });
 $('ctl-prev').onclick = () => goto(state.ply - 1);
 $('ctl-next').onclick = () => goto(state.ply + 1);
-$('ctl-last').onclick = () => goto(state.moves.length);
+$('ctl-last').onclick = () => goto(state.moves.length, { animate: false });
 $('ctl-flip').onclick = () => { state.flipped = !state.flipped; renderAll(); };
 $('ctl-arrow').onclick = e => { state.showArrow = !state.showArrow; e.currentTarget.classList.toggle('on', state.showArrow); renderBoard(); };
 $('ctl-arrow').classList.add('on');
@@ -515,33 +604,60 @@ document.addEventListener('keydown', e => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
   if (e.key === 'ArrowLeft') { goto(state.ply - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { goto(state.ply + 1); e.preventDefault(); }
-  else if (e.key === 'Home') goto(0);
-  else if (e.key === 'End') goto(state.moves.length);
+  else if (e.key === 'Home') goto(0, { animate: false });
+  else if (e.key === 'End') goto(state.moves.length, { animate: false });
   else if (e.key === 'f') { state.flipped = !state.flipped; renderAll(); }
   else if (e.key === 'a') $('ctl-arrow').click();
 });
 
 window.addEventListener('resize', () => { if (!$('screen-review').hidden) renderGraph(); });
 
-$('depth-select').onchange = () => runAnalysis();
+$('depth-select').onchange = () => { if (state.moves.length) runAnalysis(); };
 
 /* ─────────────────── analysis ─────────────────── */
 function stopAnalysis() {
   state.running = false;
+  state.analysisToken++;
   if (state.pool) { state.pool.destroy(); state.pool = null; }
 }
 
 async function runAnalysis() {
   stopAnalysis();
+  const token = state.analysisToken;
   const depth = parseInt($('depth-select').value, 10);
   const n = state.moves.length;
+  if (!n) return;
   state.evals = new Array(n + 1).fill(null);
   state.reports = new Array(n).fill(null);
+  state.tallyCursor = {};
   state.running = true;
 
   const prog = $('progress'), fill = $('progress-fill'), text = $('progress-text');
   prog.hidden = false;
+  $('report').hidden = true;
+  $('tally-more').hidden = true;
   fill.style.width = '0%';
+  text.textContent = 'Downloading Stockfish…';
+  renderGraph();
+  renderMoves();
+  renderDetail();
+
+  try {
+    await prefetchStockfish(({ pct }) => {
+      if (token !== state.analysisToken) return;
+      fill.style.width = Math.max(2, Math.round(pct * 0.35)) + '%';
+      text.textContent = pct >= 100 ? 'Starting Stockfish…' : `Downloading Stockfish… ${pct}%`;
+    });
+  } catch (ex) {
+    if (token !== state.analysisToken) return;
+    text.textContent = 'Could not download Stockfish. Check your connection and retry.';
+    fill.style.width = '0%';
+    state.running = false;
+    return;
+  }
+  if (token !== state.analysisToken || !state.running) return;
+
+  fill.style.width = '40%';
   text.textContent = 'Starting Stockfish…';
 
   let pool;
@@ -550,12 +666,13 @@ async function runAnalysis() {
     state.pool = pool;
     await pool.warmUp();
   } catch (ex) {
-    text.textContent = 'Engine failed to start. Reload and try again.';
+    if (token !== state.analysisToken) return;
+    text.textContent = 'Engine failed to start. Try changing depth or reload.';
     fill.style.width = '0%';
     state.running = false;
     return;
   }
-  if (!state.running) return;
+  if (token !== state.analysisToken || !state.running) return;
 
   const positions = [];
   for (let i = 0; i <= n; i++) {
@@ -565,18 +682,21 @@ async function runAnalysis() {
 
   let done = 0;
   const results = new Array(n + 1);
+  fill.style.width = '45%';
+  text.textContent = `Analysing… 0 / ${n + 1}`;
+
   await Promise.all(positions.map(async (fen, i) => {
     const c = new Chess(fen);
     let res;
     if (c.isGameOver()) {
       const stm = fen.split(' ')[1];
       let cp = 0;
-      if (c.isCheckmate()) cp = stm === 'w' ? -10000 : 10000;   // side to move is mated
+      if (c.isCheckmate()) cp = stm === 'w' ? -10000 : 10000;
       res = { best: null, lines: [], terminal: true, terminalCpWhite: cp };
     } else {
       res = await pool.analyse(fen, depth);
     }
-    if (!state.running) return;
+    if (token !== state.analysisToken || !state.running) return;
     results[i] = res;
 
     const stm = fen.split(' ')[1];
@@ -586,19 +706,21 @@ async function runAnalysis() {
     state.evals[i] = { cpWhite, mate: mate === null ? null : (stm === 'w' ? mate : -mate) };
 
     done++;
-    fill.style.width = Math.round((done / (n + 1)) * 100) + '%';
+    const frac = done / (n + 1);
+    fill.style.width = Math.round(45 + frac * 55) + '%';
     text.textContent = `Analysing… ${done} / ${n + 1} positions`;
 
-    // classify any move whose two neighbouring positions are both ready
     for (const idx of [i - 1, i]) {
       if (idx < 0 || idx >= n) continue;
       if (state.reports[idx] || !results[idx] || !results[idx + 1]) continue;
       state.reports[idx] = buildReport(idx, results[idx], results[idx + 1]);
     }
-    if (done % 4 === 0 || done === n + 1) { renderMoves(); renderGraph(); renderReport(); renderEvalBar(); }
+    if (done % 3 === 0 || done === n + 1) {
+      renderMoves(); renderGraph(); renderReport(); renderEvalBar(); renderDetail();
+    }
   }));
 
-  if (!state.running) return;
+  if (token !== state.analysisToken || !state.running) return;
   for (let idx = 0; idx < n; idx++) {
     if (!state.reports[idx] && results[idx] && results[idx + 1]) {
       state.reports[idx] = buildReport(idx, results[idx], results[idx + 1]);
