@@ -28,19 +28,38 @@ export function buildGameOverviewPrompt(ctx) {
     tallies, critical, moveLine, meSide,
   } = ctx;
 
-  const who = meSide === 'w' ? `You played White (${white}).`
-    : meSide === 'b' ? `You played Black (${black}).`
-    : `White is ${white}. Black is ${black}.`;
+  const seat = meSide === 'w' ? 'White' : meSide === 'b' ? 'Black' : null;
+  const youName = meSide === 'w' ? white : meSide === 'b' ? black : null;
+  const oppName = meSide === 'w' ? black : meSide === 'b' ? white : null;
+  const yourAcc = meSide === 'w' ? accW : meSide === 'b' ? accB : null;
+  const oppAcc = meSide === 'w' ? accB : meSide === 'b' ? accW : null;
+  const yourRating = meSide === 'w' ? ratingW : meSide === 'b' ? ratingB : null;
+  const oppRating = meSide === 'w' ? ratingB : meSide === 'b' ? ratingW : null;
+
+  const seatBlock = seat
+    ? `Reviewer seat: ${seat} (${youName}). Opponent: ${oppName} (${seat === 'White' ? 'Black' : 'White}).
+Address the reviewer as "you". Coach THEIR play. Do not write a neutral both-sides report.`
+    : `White is ${white}. Black is ${black}.
+No reviewer seat known. Keep the overview balanced.`;
+
+  const accBlock = seat
+    ? `Your accuracy: ${yourAcc ?? 'n/a'} (opponent ${oppAcc ?? 'n/a'})
+Your estimated game rating: ${yourRating ?? 'n/a'} (opponent ${oppRating ?? 'n/a'})`
+    : `Accuracy: White ${accW ?? 'n/a'}, Black ${accB ?? 'n/a'}
+Estimated game rating: White ${ratingW ?? 'n/a'}, Black ${ratingB ?? 'n/a'}`;
+
+  const task = seat
+    ? `Task: Game overview for the player who had ${seat}. No specific move is selected. Summarise how THEIR game went, THEIR decisive moments, and the main lesson for them.`
+    : `Task: Game overview. No specific move is selected. Summarise how the game went, the decisive moments, and the main lesson.`;
 
   return `${STYLE}
 
-Task: Game overview. No specific move is selected. Summarise how the game went, the decisive moments, and the main lesson.
+${task}
 
-${who}
+${seatBlock}
 Result from your seat: ${result || 'unknown'}
 Opening: ${opening || 'unknown'}${eco ? ` (${eco})` : ''}
-Accuracy: White ${accW ?? 'n/a'}, Black ${accB ?? 'n/a'}
-Estimated game rating: White ${ratingW ?? 'n/a'}, Black ${ratingB ?? 'n/a'}
+${accBlock}
 Move quality counts: ${tallies}
 Critical moments:
 ${critical || '(none flagged)'}
@@ -142,7 +161,7 @@ function extractText(data) {
   return parts.filter(p => p.text).map(p => p.text).join('').trim();
 }
 
-export function summariseTallies(reports, moves) {
+function tallyBits(reports) {
   const keys = ['brilliant', 'great', 'best', 'mistake', 'miss', 'blunder', 'inaccuracy'];
   const bits = [];
   for (const k of keys) {
@@ -152,7 +171,17 @@ export function summariseTallies(reports, moves) {
   return bits.join(', ') || 'mostly solid play';
 }
 
-export function criticalMoments(reports, moves, evals, limit = 5) {
+export function summariseTallies(reports, moves, meSide = null) {
+  if (!meSide) return tallyBits(reports);
+  const yours = [], opp = [];
+  reports.forEach((r, i) => {
+    if (!r || !moves[i]) return;
+    (moves[i].color === meSide ? yours : opp).push(r);
+  });
+  return `Yours (${meSide === 'w' ? 'White' : 'Black'}): ${tallyBits(yours)}; Opponent: ${tallyBits(opp)}`;
+}
+
+export function criticalMoments(reports, moves, evals, limit = 5, meSide = null) {
   const scored = [];
   for (let i = 0; i < reports.length; i++) {
     const r = reports[i];
@@ -163,9 +192,12 @@ export function criticalMoments(reports, moves, evals, limit = 5) {
     const dots = i % 2 === 0 ? '' : '...';
     const cp = evals[i + 1]?.cpWhite;
     const evalBit = cp == null ? '' : ` (eval ${(cp / 100).toFixed(1)})`;
+    const who = !meSide ? ''
+      : moves[i].color === meSide ? 'You · '
+      : 'Opponent · ';
     scored.push({
       weight,
-      line: `${num}.${dots} ${moves[i].san} = ${labelOf(r.cls)}${evalBit}`,
+      line: `${who}${num}.${dots} ${moves[i].san} = ${labelOf(r.cls)}${evalBit}`,
     });
   }
   scored.sort((a, b) => b.weight - a.weight);

@@ -41,30 +41,80 @@ export const ENGINE_MODES = {
   },
 };
 
-const prefetchCache = new Map(); // url -> Promise
+const CACHE_NAME = 'stockfish-18.0.0';
+const prefetchCache = new Map(); // urls-key -> Promise
+/** @type {Map<string, string>} CDN url -> blob: URL (session) */
+const blobUrls = new Map();
 
-function fetchWithProgress(url, onProgress) {
-  return fetch(url).then(async res => {
-    if (!res.ok) throw new Error('Engine download failed (' + res.status + ') for ' + url);
-    const total = Number(res.headers.get('content-length')) || 0;
-    if (!res.body || !res.body.getReader) {
-      await res.arrayBuffer();
-      onProgress?.(total || 1, total || 1);
-      return;
-    }
+function mimeFor(url) {
+  return url.endsWith('.wasm') ? 'application/wasm' : 'application/javascript';
+}
+
+function ensureBlobUrl(cdnUrl, buf) {
+  const existing = blobUrls.get(cdnUrl);
+  if (existing) return existing;
+  const blob = new Blob([buf], { type: mimeFor(cdnUrl) });
+  const blobUrl = URL.createObjectURL(blob);
+  blobUrls.set(cdnUrl, blobUrl);
+  return blobUrl;
+}
+
+async function openEngineCache() {
+  if (!('caches' in globalThis)) return null;
+  try { return await caches.open(CACHE_NAME); } catch (_) { return null; }
+}
+
+/** Load ArrayBuffer from Cache API or network; store on miss. */
+async function loadAsset(url, onProgress) {
+  const cache = await openEngineCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(url);
+      if (hit) {
+        const buf = await hit.arrayBuffer();
+        onProgress?.(buf.byteLength, buf.byteLength);
+        return { buf, fromCache: true };
+      }
+    } catch (_) { /* fall through to network */ }
+  }
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Engine download failed (' + res.status + ') for ' + url);
+  const total = Number(res.headers.get('content-length')) || 0;
+
+  let buf;
+  if (!res.body || !res.body.getReader) {
+    buf = await res.arrayBuffer();
+    onProgress?.(buf.byteLength, buf.byteLength);
+  } else {
     const reader = res.body.getReader();
+    const chunks = [];
     let loaded = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      chunks.push(value);
       loaded += value.byteLength;
       onProgress?.(loaded, total);
     }
+    const out = new Uint8Array(loaded);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+    buf = out.buffer;
     onProgress?.(total || loaded, total || loaded);
-  });
+  }
+
+  if (cache) {
+    try {
+      await cache.put(url, new Response(buf.slice(0), {
+        headers: { 'Content-Type': mimeFor(url), 'Content-Length': String(buf.byteLength) },
+      }));
+    } catch (_) { /* quota / private mode */ }
+  }
+  return { buf, fromCache: false };
 }
 
-/** Prefetch JS (+ WASM) into HTTP cache; reports {loaded,total,pct,label}. */
+/** Prefetch JS (+ WASM) into Cache API + blob URLs; reports {loaded,total,pct,label,fromCache}. */
 export function prefetchEngine(mode, onProgress) {
   const cfg = ENGINE_MODES[mode] || ENGINE_MODES.balanced;
   const urls = cfg.wasm ? [cfg.js, cfg.wasm] : [cfg.js];
@@ -72,9 +122,16 @@ export function prefetchEngine(mode, onProgress) {
   if (prefetchCache.has(key)) return prefetchCache.get(key);
 
   const promise = (async () => {
+    // Already have session blobs → instant
+    if (urls.every(u => blobUrls.has(u))) {
+      onProgress?.({ loaded: 1, total: 1, pct: 100, label: cfg.label, fromCache: true });
+      return;
+    }
+
     const sizes = urls.map(() => 0);
     const loadedArr = urls.map(() => 0);
     const known = urls.map(() => false);
+    let anyNetwork = false;
 
     const report = () => {
       const loaded = loadedArr.reduce((a, b) => a + b, 0);
@@ -83,21 +140,35 @@ export function prefetchEngine(mode, onProgress) {
       let pct;
       if (totalKnown && total > 0) pct = Math.min(99, Math.round((loaded / total) * 100));
       else pct = Math.min(90, Math.round(loaded / 5e5));
-      onProgress?.({ loaded, total, pct, label: cfg.label });
+      onProgress?.({ loaded, total, pct, label: cfg.label, fromCache: !anyNetwork });
     };
 
-    await Promise.all(urls.map((url, i) =>
-      fetchWithProgress(url, (loaded, total) => {
+    await Promise.all(urls.map(async (url, i) => {
+      if (blobUrls.has(url)) {
+        // Unknown size for cached blob — treat as done for this slot
+        loadedArr[i] = 1;
+        sizes[i] = 1;
+        known[i] = true;
+        report();
+        return;
+      }
+      const { buf, fromCache } = await loadAsset(url, (loaded, total) => {
         loadedArr[i] = loaded;
         if (total > 0) { sizes[i] = total; known[i] = true; }
         report();
-      })
-    ));
+      });
+      if (!fromCache) anyNetwork = true;
+      if (!known[i]) { sizes[i] = buf.byteLength; known[i] = true; loadedArr[i] = buf.byteLength; }
+      ensureBlobUrl(url, buf);
+      report();
+    }));
+
     onProgress?.({
       loaded: sizes.reduce((a, b) => a + b, 0) || loadedArr.reduce((a, b) => a + b, 0),
       total: sizes.reduce((a, b) => a + b, 0) || loadedArr.reduce((a, b) => a + b, 0),
       pct: 100,
       label: cfg.label,
+      fromCache: !anyNetwork,
     });
   })().catch(err => {
     prefetchCache.delete(key);
@@ -108,11 +179,11 @@ export function prefetchEngine(mode, onProgress) {
   return promise;
 }
 
-/** Same-origin worker URL. CDN script via ?js=; WASM path via hash (SF bootstrap). */
+/** Same-origin worker URL. Blob (or CDN) script via ?js=; WASM via hash (SF bootstrap). */
 function workerUrlFor(cfg) {
   const u = new URL('./sf-worker.js', import.meta.url);
-  u.searchParams.set('js', cfg.js);
-  if (cfg.wasm) u.hash = encodeURIComponent(cfg.wasm);
+  u.searchParams.set('js', blobUrls.get(cfg.js) || cfg.js);
+  if (cfg.wasm) u.hash = encodeURIComponent(blobUrls.get(cfg.wasm) || cfg.wasm);
   return u;
 }
 

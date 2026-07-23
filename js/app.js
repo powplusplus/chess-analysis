@@ -352,7 +352,7 @@ function squareAt(index) {                       // index 0..63 in display order
 }
 
 function renderBoard(opts = {}) {
-  const { skipPieceOn } = opts;
+  const skip = new Set(opts.skipPiecesOn || (opts.skipPieceOn ? [opts.skipPieceOn] : []));
   const fen = state.ply === 0 ? state.moves[0].fenBefore : state.moves[state.ply - 1].fenAfter;
   const pos = new Chess(fen);
   const squares = $('board').children;
@@ -373,11 +373,11 @@ function renderBoard(opts = {}) {
     if (r === 7) html += `<span class="coord file">${name[0]}</span>`;
 
     const p = pos.get(name);
-    if (p && name !== skipPieceOn) html += `<span class="piece-wrap">${pieceSvg(p.color, p.type)}</span>`;
-    if (rep && name === last.to && name !== skipPieceOn) html += `<span class="badge">${icon(rep.cls, false)}</span>`;
+    if (p && !skip.has(name)) html += `<span class="piece-wrap">${pieceSvg(p.color, p.type)}</span>`;
+    if (rep && name === last.to && !skip.has(name)) html += `<span class="badge">${icon(rep.cls, false)}</span>`;
     el.innerHTML = html;
   }
-  drawArrow(skipPieceOn ? null : rep);
+  drawArrow(skip.size ? null : rep);
 }
 
 function sqCenter(sq) {
@@ -405,8 +405,8 @@ function animatePlyChange(fromPly, toPly) {
   const a = sqCenter(from), b = sqCenter(to);
   if (!a.size) return Promise.resolve();
 
-  // Hide destination (forward) or origin piece while flyer moves
-  renderBoard({ skipPieceOn: forward ? to : from });
+  // Hide both ends — FEN already has piece at dest; undo-capture also sits on origin
+  renderBoard({ skipPiecesOn: [from, to] });
 
   const flyer = document.createElement('div');
   flyer.className = 'piece-flyer';
@@ -794,11 +794,14 @@ function setCoachText(text) {
 }
 
 function coachSubtitle() {
-  if (state.ply === 0) return 'Game overview';
+  const side = meSide();
+  const seat = side === 'w' ? 'White' : side === 'b' ? 'Black' : null;
+  if (state.ply === 0) return seat ? `Game overview · ${seat}` : 'Game overview';
   const mv = state.moves[state.ply - 1];
   const num = Math.floor((state.ply - 1) / 2) + 1;
   const dots = (state.ply - 1) % 2 === 0 ? '' : '...';
-  return `Move ${num}${dots ? '…' : '.'} ${mv.san}`;
+  const moveBit = `Move ${num}${dots ? '…' : '.'} ${mv.san}`;
+  return seat ? `${moveBit} · ${seat}` : moveBit;
 }
 
 function meSide() {
@@ -811,7 +814,7 @@ function analysisReady() {
 }
 
 function coachCacheKey() {
-  return state.analysisToken + ':' + state.ply;
+  return state.analysisToken + ':' + state.ply + ':' + (meSide() || '-');
 }
 
 function syncCoachUi() {
@@ -931,8 +934,8 @@ function makeOverviewPrompt() {
     accB: ab == null ? null : ab.toFixed(1),
     ratingW: estimateRating(aw),
     ratingB: estimateRating(ab),
-    tallies: summariseTallies(state.reports, state.moves),
-    critical: criticalMoments(state.reports, state.moves, state.evals),
+    tallies: summariseTallies(state.reports, state.moves, meSide()),
+    critical: criticalMoments(state.reports, state.moves, state.evals, 5, meSide()),
     moveLine: moveLine(state.moves, state.reports),
     meSide: meSide(),
   });
@@ -1068,18 +1071,19 @@ async function runAnalysis() {
   $('report').hidden = true;
   $('tally-more').hidden = true;
   fill.style.width = '0%';
-  text.textContent = `Downloading ${cfg.label}…`;
+  text.textContent = `Loading ${cfg.label}…`;
   renderGraph();
   renderMoves();
   renderDetail();
 
   try {
-    await prefetchEngine(mode, ({ pct, label }) => {
+    await prefetchEngine(mode, ({ pct, label, fromCache }) => {
       if (token !== state.analysisToken) return;
       fill.style.width = Math.max(2, Math.round(pct * 0.35)) + '%';
+      const verb = fromCache ? 'Loading' : 'Downloading';
       text.textContent = pct >= 100
         ? `Starting ${label || cfg.label}…`
-        : `Downloading ${label || cfg.label}… ${pct}%`;
+        : `${verb} ${label || cfg.label}… ${pct}%`;
     });
   } catch (ex) {
     if (token !== state.analysisToken) return;
