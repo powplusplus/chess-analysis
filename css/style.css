@@ -167,18 +167,19 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
 body.reviewing{overflow:hidden}
 body.reviewing .topbar{padding:6px 14px}
 .screen-review{
-  --sidebar-w:400px;
+  --sidebar-w:380px;
   --eval-w:18px;
   --topbar-h:48px;
-  --board-chrome:78px; /* player strips + controls + gaps */
-  --board-max:calc(100dvh - var(--topbar-h) - var(--board-chrome) - 12px);
+  /* Fill available height (players + controls + gaps) — chess.com-sized */
+  --board-chrome:78px;
+  --board-max:calc(100dvh - var(--topbar-h) - var(--board-chrome) - 16px);
   display:flex;align-items:stretch;justify-content:center;
-  gap:14px;padding:6px 10px 8px;width:100%;flex:1;min-height:0;
+  gap:14px;padding:8px 12px;width:100%;flex:1;min-height:0;
   height:calc(100dvh - var(--topbar-h));
   box-sizing:border-box;overflow:hidden;
 }
 .board-col{
-  flex:0 1 auto;min-width:0;min-height:0;display:flex;justify-content:center;align-items:center;
+  flex:1 1 auto;min-width:0;min-height:0;display:flex;justify-content:flex-end;align-items:center;
 }
 .board-area{
   display:grid;
@@ -298,9 +299,9 @@ body.reviewing .topbar{padding:6px 14px}
 
 .graph-wrap{
   background:#262421;border-bottom:1px solid var(--line);
-  padding:0;overflow:hidden;flex:none;height:88px;
+  padding:0;overflow:hidden;flex:none;height:72px;
 }
-#graph{display:block;width:100%;height:88px;cursor:pointer}
+#graph{display:block;width:100%;height:72px;cursor:pointer}
 
 .side-tabs{
   display:flex;flex:none;background:#262421;border-bottom:1px solid var(--line);
@@ -441,31 +442,34 @@ body.reviewing .topbar{padding:6px 14px}
 /* ============ responsive ============ */
 @media (max-width:980px){
   .screen-review{
-    flex-direction:column;align-items:center;padding:8px;gap:10px;
+    flex-direction:column;align-items:center;padding:10px;gap:12px;
     height:auto;min-height:calc(100dvh - var(--topbar-h));
     overflow:auto;
+    --board-max:min(560px, calc(100dvh - var(--topbar-h) - 280px));
   }
   body.reviewing{overflow:auto}
   .board-col{justify-content:center;flex:0 0 auto}
   .board-area{
     width:min(
       100%,
-      calc(100vw - 20px),
-      calc(100dvh - var(--topbar-h) - 220px)
+      calc(100vw - 24px),
+      calc(var(--board-max) + var(--eval-w) + 8px)
     );
   }
   .sidebar{
-    width:min(100%,520px);height:min(56dvh,520px);max-height:56dvh;flex:none;
+    width:min(100%,480px);height:min(48dvh,440px);max-height:48dvh;flex:none;
   }
 }
 @media (max-width:720px){
   .rail{display:none}
   :root{--rail:0px}
-  .screen-review{--board-chrome:70px}
-  .board-area{
-    width:min(100%, calc(100vw - 16px), calc(100dvh - var(--topbar-h) - 200px));
+  .screen-review{
+    --board-max:min(480px, calc(100dvh - var(--topbar-h) - 300px));
   }
-  .sidebar{height:min(58dvh,540px);max-height:58dvh;width:100%}
+  .board-area{
+    width:min(100%, calc(100vw - 16px), calc(var(--board-max) + var(--eval-w) + 8px));
+  }
+  .sidebar{height:min(50dvh,460px);max-height:50dvh;width:100%}
 }
 @media (max-width:520px){
   .hero{margin-top:6vh}

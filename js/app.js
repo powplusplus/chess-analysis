@@ -504,7 +504,7 @@ function renderReport() {
 function renderGraph() {
   const cv = $('graph');
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || 400, h = 88;
+  const w = cv.clientWidth || 360, h = 72;
   cv.width = w * dpr; cv.height = h * dpr;
   const g = cv.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
