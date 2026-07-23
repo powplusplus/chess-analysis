@@ -24,6 +24,11 @@ export async function fetchRecentGames(username, want = 30) {
   return { user, games: games.slice(0, want) };
 }
 
+export function gameIdFromUrl(url) {
+  const m = String(url || '').match(/\/game\/(?:live|daily|computer)\/(\d+)/i);
+  return m ? m[1] : null;
+}
+
 export function summarise(game, user) {
   const w = game.white || {}, b = game.black || {};
   const meIsWhite = (w.username || '').toLowerCase() === user;
@@ -44,5 +49,6 @@ export function summarise(game, user) {
     date: game.end_time ? new Date(game.end_time * 1000) : null,
     pgn: game.pgn,
     url: game.url,
+    id: gameIdFromUrl(game.url) || (game.end_time != null ? String(game.end_time) : null),
   };
 }

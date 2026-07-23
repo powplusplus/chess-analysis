@@ -2,7 +2,7 @@ import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
 import { EnginePool, prefetchEngine, ENGINE_MODES } from './engine.js';
 import { icon, colorOf, labelOf } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
-import { fetchRecentGames, summarise } from './chesscom.js';
+import { fetchRecentGames, summarise, gameIdFromUrl } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
   askCoach, buildGameOverviewPrompt, buildMovePrompt,
@@ -33,22 +33,179 @@ const state = {
   coachReqId: 0,
   coachBusy: false,
   coachTargetKey: null,
+  user: null,           // chess.com username for current games list
+  games: [],            // raw games from last fetch
+  gameId: null,         // chess.com game id when reviewing
+  pgnLocal: false,      // reviewing a pasted PGN
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
 const TALLY_PRIMARY = ['brilliant', 'great', 'best', 'mistake', 'miss', 'blunder'];
 const TALLY_SECONDARY = ['excellent', 'good', 'book', 'inaccuracy'];
 
-/* ─────────────────── screens ─────────────────── */
+/* ─────────────────── screens + URL routing ─────────────────── */
+const PGN_STORE = 'mcr-pgn';
+
 function show(name) {
   for (const s of ['search', 'games', 'review']) $('screen-' + s).hidden = (s !== name);
   document.body.classList.toggle('reviewing', name === 'review');
 }
 
-function goHome() { stopAnalysis(); show('search'); $('input-user').focus(); }
+function readRoute() {
+  const p = new URLSearchParams(location.search);
+  const user = (p.get('user') || '').trim().toLowerCase() || null;
+  const game = (p.get('game') || '').trim() || null;
+  const plyRaw = p.get('ply');
+  const ply = plyRaw != null && plyRaw !== '' ? parseInt(plyRaw, 10) : null;
+  return {
+    user,
+    game,
+    ply: Number.isFinite(ply) && ply >= 0 ? ply : null,
+    pgn: p.get('pgn') === '1',
+  };
+}
+
+function buildUrl(params) {
+  const sp = new URLSearchParams();
+  if (params.user) sp.set('user', params.user);
+  if (params.game) sp.set('game', params.game);
+  if (params.pgn) sp.set('pgn', '1');
+  if (params.ply != null && params.ply > 0) sp.set('ply', String(params.ply));
+  const qs = sp.toString();
+  return qs ? `${location.pathname}?${qs}` : (location.pathname || './');
+}
+
+function setUrl(params, { replace = false } = {}) {
+  const url = buildUrl(params);
+  const cur = location.pathname + location.search;
+  if (url === cur || url === cur.replace(/\/$/, '') || cur === url.replace(/\/$/, '')) {
+    if (replace) history.replaceState(null, '', url);
+    return;
+  }
+  history[replace ? 'replaceState' : 'pushState'](null, '', url);
+}
+
+function setTitle(route) {
+  if (route.game && route.user) document.title = `Game ${route.game} · ${route.user} · MCR`;
+  else if (route.pgn) document.title = 'PGN review · MCR';
+  else if (route.user) document.title = `${route.user} · MCR`;
+  else document.title = 'MCR - Magnus Chess Review';
+}
+
+function syncPlyUrl() {
+  const r = readRoute();
+  if (!r.game && !r.pgn) return;
+  setUrl({
+    user: r.user,
+    game: r.game,
+    pgn: r.pgn,
+    ply: state.ply > 0 ? state.ply : null,
+  }, { replace: true });
+}
+
+function goHome() {
+  stopAnalysis();
+  state.user = null;
+  state.games = [];
+  state.gameId = null;
+  state.pgnLocal = false;
+  try { sessionStorage.removeItem(PGN_STORE); } catch (_) {}
+  setUrl({}, { replace: true });
+  setTitle({});
+  show('search');
+  $('input-user').focus();
+}
+
+let routeToken = 0;
+
+async function ensureGames(user) {
+  if (state.user === user && state.games.length) return state.games;
+  const { user: u, games } = await fetchRecentGames(user);
+  state.user = u;
+  state.games = games;
+  return games;
+}
+
+async function applyRoute() {
+  const token = ++routeToken;
+  const route = readRoute();
+  setTitle(route);
+
+  if (route.pgn) {
+    let pgn = null;
+    try { pgn = sessionStorage.getItem(PGN_STORE); } catch (_) {}
+    if (!pgn) { goHome(); return; }
+    if (!state.pgnLocal || !state.moves.length) startReview(pgn, null, { localPgn: true });
+    else show('review');
+    if (token !== routeToken) return;
+    if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true });
+    return;
+  }
+
+  if (route.user && route.game) {
+    $('input-user').value = route.user;
+    const err = $('search-error');
+    err.hidden = true;
+    try {
+      const games = await ensureGames(route.user);
+      if (token !== routeToken) return;
+      renderGames(route.user, games);
+      const hit = games.map(g => summarise(g, route.user)).find(s => s.id === route.game);
+      if (!hit) {
+        show('games');
+        const list = $('games-list');
+        const note = document.createElement('p');
+        note.className = 'games-empty';
+        note.textContent = `Game ${route.game} not in recent games for ${route.user}.`;
+        list.prepend(note);
+        return;
+      }
+      if (state.gameId !== route.game || !state.moves.length) startReview(hit.pgn, hit);
+      else show('review');
+      if (token !== routeToken) return;
+      if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true });
+    } catch (ex) {
+      if (token !== routeToken) return;
+      show('search');
+      err.textContent = ex.message || 'Could not load those games.';
+      err.hidden = false;
+    }
+    return;
+  }
+
+  if (route.user) {
+    $('input-user').value = route.user;
+    const err = $('search-error');
+    err.hidden = true;
+    stopAnalysis();
+    state.gameId = null;
+    state.pgnLocal = false;
+    try {
+      const games = await ensureGames(route.user);
+      if (token !== routeToken) return;
+      renderGames(route.user, games);
+      show('games');
+    } catch (ex) {
+      if (token !== routeToken) return;
+      show('search');
+      err.textContent = ex.message || 'Could not load those games.';
+      err.hidden = false;
+    }
+    return;
+  }
+
+  stopAnalysis();
+  state.user = null;
+  state.games = [];
+  state.gameId = null;
+  state.pgnLocal = false;
+  show('search');
+  $('input-user').focus();
+}
+
 $('btn-new').onclick = goHome;
 $('rail-new').onclick = goHome;
-$('btn-back-search').onclick = () => show('search');
+$('btn-back-search').onclick = () => goHome();
 
 $('form-user').onsubmit = async e => {
   e.preventDefault();
@@ -59,9 +216,12 @@ $('form-user').onsubmit = async e => {
   const btn = e.target.querySelector('button');
   btn.disabled = true; btn.textContent = 'Loading…';
   try {
-    const { user, games } = await fetchRecentGames(name);
+    const user = name.toLowerCase();
+    const games = await ensureGames(user);
     renderGames(user, games);
     show('games');
+    setUrl({ user });
+    setTitle({ user });
   } catch (ex) {
     err.textContent = ex.message || 'Could not load those games.';
     err.hidden = false;
@@ -74,8 +234,16 @@ $('form-pgn').onsubmit = e => {
   e.preventDefault();
   const pgn = $('input-pgn').value.trim();
   if (!pgn) return;
-  try { startReview(pgn, null); }
-  catch (ex) { const err = $('search-error'); err.textContent = 'That PGN could not be read.'; err.hidden = false; }
+  try {
+    sessionStorage.setItem(PGN_STORE, pgn);
+    startReview(pgn, null, { localPgn: true });
+    setUrl({ pgn: true });
+    setTitle({ pgn: true });
+  } catch (ex) {
+    const err = $('search-error');
+    err.textContent = 'That PGN could not be read.';
+    err.hidden = false;
+  }
 };
 
 /* ─────────────────── game picker ─────────────────── */
@@ -95,14 +263,19 @@ function renderGames(user, games) {
       </div>
       <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
       <span class="game-date">${s.date ? s.date.toLocaleDateString() : ''}</span>`;
-    card.onclick = () => startReview(s.pgn, s);
+    card.onclick = () => {
+      if (!s.id) return;
+      startReview(s.pgn, s);
+      setUrl({ user, game: s.id });
+      setTitle({ user, game: s.id });
+    };
     list.appendChild(card);
   });
   if (!games.length) list.innerHTML = '<p class="games-empty">No games found.</p>';
 }
 
 /* ─────────────────── loading a game ─────────────────── */
-function startReview(pgn, meta) {
+function startReview(pgn, meta, opts = {}) {
   const c = new Chess();
   c.loadPgn(pgn);                       // throws on malformed PGN
   const history = c.history({ verbose: true });
@@ -140,6 +313,8 @@ function startReview(pgn, meta) {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  state.gameId = meta?.id || gameIdFromUrl(meta?.url) || null;
+  state.pgnLocal = !!opts.localPgn;
 
   show('review');
   buildBoard();
@@ -577,7 +752,7 @@ $('graph').addEventListener('click', e => {
 
 /* ─────────────────── navigation ─────────────────── */
 async function goto(ply, opts = {}) {
-  const { animate = true } = opts;
+  const { animate = true, skipUrl = false } = opts;
   const next = Math.max(0, Math.min(state.moves.length, ply));
   const prev = state.ply;
   if (next === prev) { renderAll(); return; }
@@ -588,11 +763,13 @@ async function goto(ply, opts = {}) {
     try { await animatePlyChange(prev, next); }
     finally { state.animating = false; }
     renderAll();
+    if (!skipUrl) syncPlyUrl();
     return;
   }
 
   state.ply = next;
   renderAll();
+  if (!skipUrl) syncPlyUrl();
 }
 function renderAll() {
   renderBoard(); renderPlayers(); renderEvalBar();
@@ -923,9 +1100,12 @@ async function runAnalysis() {
     await pool.warmUp();
   } catch (ex) {
     if (token !== state.analysisToken) return;
+    console.error('Engine start failed', ex);
     text.textContent = 'Engine failed to start. Try another mode or reload.';
     fill.style.width = '0%';
     state.running = false;
+    if (pool) { try { pool.destroy(); } catch (_) {} }
+    state.pool = null;
     return;
   }
   if (token !== state.analysisToken || !state.running) return;
@@ -1013,7 +1193,6 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
-// deep-link: ?user=name
-const params = new URLSearchParams(location.search);
-if (params.get('user')) { $('input-user').value = params.get('user'); $('form-user').requestSubmit(); }
-else $('input-user').focus();
+// deep-link + browser back/forward
+window.addEventListener('popstate', () => { applyRoute(); });
+applyRoute();

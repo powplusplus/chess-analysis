@@ -108,12 +108,19 @@ export function prefetchEngine(mode, onProgress) {
   return promise;
 }
 
+/** Same-origin worker URL. CDN script via ?js=; WASM path via hash (SF bootstrap). */
+function workerUrlFor(cfg) {
+  const u = new URL('./sf-worker.js', import.meta.url);
+  u.searchParams.set('js', cfg.js);
+  if (cfg.wasm) u.hash = encodeURIComponent(cfg.wasm);
+  return u;
+}
+
 class Engine {
   /** @param {typeof ENGINE_MODES[EngineMode]} cfg */
   constructor(cfg) {
     this.cfg = cfg;
-    // Cross-origin worker: script + sibling .wasm resolve via unpkg same-dir paths.
-    this.worker = new Worker(cfg.js);
+    this.worker = new Worker(workerUrlFor(cfg));
     this.pending = null;
     this.readyResolve = null;
     this.readyReject = null;
@@ -135,7 +142,7 @@ class Engine {
     };
     this.worker.onerror = (err) => {
       if (this.readyReject) {
-        this.readyReject(err?.message || 'worker error');
+        this.readyReject(new Error(err?.message || 'worker error'));
         this.readyResolve = null;
         this.readyReject = null;
       }
