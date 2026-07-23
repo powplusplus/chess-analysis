@@ -34,8 +34,8 @@ export default async function handler(req, res) {
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 4096,
-          thinkingConfig: { thinkingLevel: 'high' },
+          maxOutputTokens: 2048,
+          thinkingConfig: { thinkingLevel: 'MINIMAL' },
         },
       }),
     });
@@ -55,5 +55,7 @@ export default async function handler(req, res) {
 function extractText(data) {
   const parts = data?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return '';
-  return parts.filter(p => p.text && !p.thought).map(p => p.text).join('').trim();
+  const spoken = parts.filter(p => p.text && !p.thought).map(p => p.text).join('').trim();
+  if (spoken) return spoken;
+  return parts.filter(p => p.text).map(p => p.text).join('').trim();
 }

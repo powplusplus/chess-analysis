@@ -18,7 +18,8 @@ Voice rules (strict):
 - Prefer "it's not X, it's Y" when correcting a misconception.
 - Short paragraphs. Direct. No fluff. No emoji. No markdown headings.
 - 2 to 4 short paragraphs max.
-- Sound like a real coach talking to the player, not a textbook.`;
+- Sound like a real coach talking to the player, not a textbook.
+- Never only restate the move or its label (Best, Blunder, etc). Explain the idea, the plan, and what to do next.`;
 
 export function buildGameOverviewPrompt(ctx) {
   const {
@@ -79,7 +80,8 @@ If the move was good, say why. If it was wrong, name the idea that failed and th
 }
 
 export async function askCoach(prompt, signal) {
-  // Prefer same-origin proxy (keeps key off the wire to Google from the browser when deployed).
+  // 1) Same-origin Vercel proxy (preferred — key stays on server)
+  let proxyMiss = false;
   try {
     const r = await fetch('/api/coach', {
       method: 'POST',
@@ -90,22 +92,28 @@ export async function askCoach(prompt, signal) {
     if (r.ok) {
       const data = await r.json();
       if (data.text) return data.text;
+      throw new Error('Empty coach reply');
     }
-    // Fall through on 404 (static host) or misconfig.
-    if (r.status !== 404 && r.status !== 405) {
-      const data = await r.json().catch(() => ({}));
-      if (data.error && r.status !== 500) throw new Error(data.error);
-    }
+    const data = await r.json().catch(() => ({}));
+    // No route / missing server key → try browser config. Other errors bubble.
+    if (r.status === 404 || r.status === 405) proxyMiss = true;
+    else if (r.status === 500 && /GOOGLE_API_KEY|not configured/i.test(data.error || '')) proxyMiss = true;
+    else throw new Error(data.error || `Coach API ${r.status}`);
   } catch (ex) {
     if (ex.name === 'AbortError') throw ex;
-    // network / no api route → try direct
+    if (!proxyMiss && !/Failed to fetch|NetworkError|Load failed/i.test(ex.message || '')) throw ex;
+    proxyMiss = true;
   }
 
+  // 2) Local static fallback (js/coach-config.js — gitignored)
   const key = await loadApiKey();
   if (!key || key.includes('your_google')) {
-    throw new Error('Coach needs a Google API key. Copy js/coach-config.example.js to js/coach-config.js, or set GOOGLE_API_KEY for /api/coach.');
+    throw new Error('Coach needs GOOGLE_API_KEY on Vercel (Settings → Environment Variables), or js/coach-config.js locally.');
   }
+  return callGemini(key, prompt, signal);
+}
 
+async function callGemini(key, prompt, signal) {
   const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -113,21 +121,25 @@ export async function askCoach(prompt, signal) {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 4096,
-        thinkingConfig: { thinkingLevel: 'high' },
+        maxOutputTokens: 2048,
+        thinkingConfig: { thinkingLevel: 'MINIMAL' },
       },
     }),
     signal,
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data?.error?.message || `Gemini error ${r.status}`);
-  const text = (data?.candidates?.[0]?.content?.parts || [])
-    .filter(p => p.text && !p.thought)
-    .map(p => p.text)
-    .join('')
-    .trim();
+  const text = extractText(data);
   if (!text) throw new Error('Empty coach reply');
   return text;
+}
+
+function extractText(data) {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  const spoken = parts.filter(p => p.text && !p.thought).map(p => p.text).join('').trim();
+  if (spoken) return spoken;
+  return parts.filter(p => p.text).map(p => p.text).join('').trim();
 }
 
 export function summariseTallies(reports, moves) {

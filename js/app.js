@@ -660,7 +660,7 @@ function scheduleCoach() {
 
   if (state.coachTimer) clearTimeout(state.coachTimer);
   setCoachPlaceholder(state.ply === 0 ? 'Coach reading the game…' : 'Coach looking at this move…');
-  state.coachTimer = setTimeout(() => refreshCoach(cacheKey), 450);
+  state.coachTimer = setTimeout(() => refreshCoach(cacheKey), 300);
 }
 
 async function refreshCoach(cacheKey) {
