@@ -199,5 +199,7 @@ export function classifyMove(ctx) {
   }
 
   return { cls, cpBefore, cpAfter, wBefore, wAfter, drop, accuracy, gap, isBest, book, sacrifice,
-           bestUci, bestPv: before.lines[0] ? before.lines[0].pv : [] };
+           bestUci, bestPv: before.lines[0] ? before.lines[0].pv : [],
+           // Engine line from the position AFTER this move (side to move = opponent of mover).
+           replyPv: after.lines[0] ? after.lines[0].pv : [] };
 }

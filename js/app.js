@@ -1431,6 +1431,24 @@ function makeOverviewPrompt() {
   });
 }
 
+function pvToSans(fen, pv, maxPlies = 8) {
+  if (!fen || !pv?.length) return [];
+  const c = new Chess(fen);
+  const sans = [];
+  for (const uci of pv.slice(0, maxPlies)) {
+    try {
+      const m = c.move({
+        from: uci.slice(0, 2),
+        to: uci.slice(2, 4),
+        promotion: uci[4] || 'q',
+      });
+      if (!m) break;
+      sans.push(m.san);
+    } catch (_) { break; }
+  }
+  return sans;
+}
+
 function makeMovePrompt(opts = {}) {
   const idx = state.ply - 1;
   const mv = state.moves[idx];
@@ -1450,25 +1468,13 @@ function makeMovePrompt(opts = {}) {
     bestSan = mv.san;
   }
 
-  let bestLine = null;
-  if (rep?.bestPv?.length) {
-    const c = new Chess(mv.fenBefore);
-    const sans = [];
-    for (const uci of rep.bestPv.slice(0, 8)) {
-      try {
-        const m = c.move({
-          from: uci.slice(0, 2),
-          to: uci.slice(2, 4),
-          promotion: uci[4] || 'q',
-        });
-        if (!m) break;
-        sans.push(m.san);
-      } catch (_) { break; }
-    }
-    if (sans.length) bestLine = sans.join(' ');
-  } else if (bestSan) {
-    bestLine = bestSan;
-  }
+  const bestSans = pvToSans(mv.fenBefore, rep?.bestPv);
+  const bestLine = bestSans.length ? bestSans.join(' ') : (bestSan || null);
+
+  // After-position engine line = reply for the side that did NOT just move.
+  const replySans = pvToSans(mv.fenAfter, rep?.replyPv);
+  const replySan = replySans[0] || null;
+  const replyLine = replySans.length ? replySans.join(' ') : null;
 
   const start = Math.max(0, idx - 5);
   const recent = state.moves.slice(start, idx + 1).map((m, i) => {
@@ -1490,6 +1496,8 @@ function makeMovePrompt(opts = {}) {
     cpAfter: fmtCpShort(state.evals[idx + 1]?.cpWhite),
     bestSan,
     bestLine,
+    replySan,
+    replyLine,
     fenBefore: mv.fenBefore,
     fenAfter: mv.fenAfter,
     recent,

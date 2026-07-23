@@ -30,7 +30,7 @@ Grounding rules (strict, never break):
 - When board images are attached, trust visible piece placement on those images together with the FEN. Do not place pieces that are not on the boards / FEN.
 - Do NOT invent opening names, ECO codes, or plans beyond the given Opening line.
 - Do NOT invent scores, ratings, or move labels. Trust Engine class and evals over your own recall.
-- If engine best / PV is given, prefer that line. If a detail is missing, omit it. Prefer a shorter true note over a vivid guess.
+- If mover better alternative / PV or your-reply PV is given, prefer those labeled lines. Never treat the mover's missed move as the reviewer's reply. If a detail is missing, omit it. Prefer a shorter true note over a vivid guess.
 - Before writing, silently check each claim against the facts above. Drop any claim you cannot verify.`;
 
 export function buildGameOverviewPrompt(ctx) {
@@ -83,7 +83,8 @@ Write the overview now. Stay inside the facts above. Critical moments and move t
 export function buildMovePrompt(ctx) {
   const {
     white, black, meSide, ply, moveNum, san, color, cls,
-    cpBefore, cpAfter, bestSan, bestLine, fenBefore, fenAfter, recent, opening,
+    cpBefore, cpAfter, bestSan, bestLine, replySan, replyLine,
+    fenBefore, fenAfter, recent, opening,
     wBefore, wAfter, drop, sacrifice, hasBoardImages,
   } = ctx;
 
@@ -103,7 +104,7 @@ No reviewer seat known. Keep the note balanced.`;
     ? `${mover} played ${san}.`
     : youMoved
       ? `You (${seat}) played ${san}. This is YOUR move. Judge it for you.`
-      : `Opponent (${mover}) played ${san}. Explain what this does to YOU (${seat}) and how you should respond.`;
+      : `Opponent (${mover}) played ${san}. Explain what this does to YOU (${seat}). If advising a reply, use ONLY "Your best reply" below, never "Mover better alternative".`;
 
   const evalHint = seat
     ? `Evals are White-centric (positive = White better). You are ${seat}, so read them from your seat.`
@@ -124,6 +125,27 @@ No reviewer seat known. Keep the note balanced.`;
     ? `Board images: two PNGs are attached before this text. Image 1 = BEFORE the move. Image 2 = AFTER the move (yellow squares = from/to of the played move). Use them with the FEN to see piece placement. Do not invent pieces or tactics not visible there or in the engine facts.`
     : '';
 
+  // "Engine best" is always the better alt for the side that just moved — never the other side's reply.
+  const altBlock = `Mover better alternative (instead of ${san}, same side to move BEFORE this ply): ${bestSan || 'same as played / unknown'}
+Mover better PV (SAN, starts from the BEFORE position): ${bestLine || 'n/a'}
+CRITICAL: That alternative belongs to ${mover} on this ply. It is NOT ${seat || 'the other side'}'s next move.`;
+
+  const replyBlock = replySan
+    ? `Your best reply (engine, side to move AFTER ${san}): ${replySan}
+Your best reply PV (SAN, starts from the AFTER position): ${replyLine || replySan}`
+    : `Your best reply: n/a (no after-position line). Do not invent a reply move. Do not reuse the mover alternative as a reply.`;
+
+  const engineBlock = youMoved || !seat
+    ? altBlock
+    : `${altBlock}
+${replyBlock}`;
+
+  const anchor = !seat
+    ? `Anchor on engine class, eval change, and the mover better PV. If the move was good, say why. If wrong, name the failed idea and the better plan from the mover alternative / PV.`
+    : youMoved
+      ? `Anchor on engine class, eval change, and the mover better PV. If YOUR move was good, say why. If wrong, name YOUR failed idea and YOUR better plan from the mover alternative / PV (that line is yours).`
+      : `Opponent moved. Mover better alternative is what THEY missed, not your reply. For how YOU should respond, use only "Your best reply" / reply PV. Never tell the reviewer to play the mover alternative.`;
+
   return `${STYLE}
 
 ${task}
@@ -135,14 +157,13 @@ Engine class: ${cls || 'unknown'}
 Eval before (White cp): ${cpBefore ?? 'n/a'}
 Eval after (White cp): ${cpAfter ?? 'n/a'}
 ${evalHint}
-${winBits ? `${winBits}\n` : ''}Engine best: ${bestSan || 'same as played / unknown'}
-Engine best PV (SAN): ${bestLine || 'n/a'}
+${winBits ? `${winBits}\n` : ''}${engineBlock}
 Position before (FEN): ${fenBefore || 'n/a'}
 Position after (FEN): ${fenAfter}
 Recent moves: ${recent}
 ${boardBlock ? `${boardBlock}\n` : ''}${address}
 
-Anchor on engine class, eval change, and the best PV. If the move was good, say why from those facts. If wrong, name the failed idea and the better plan from Engine best / PV in plain words. Do not invent tactics absent from FEN, board images, or PV. No em dashes.`;
+${anchor} Do not invent tactics absent from FEN, board images, or PV. No em dashes.`;
 }
 
 function sanitizeImages(images) {
