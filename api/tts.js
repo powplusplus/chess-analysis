@@ -2,10 +2,22 @@ const TTS_MODELS = [
   'gemini-2.5-pro-preview-tts',
   'gemini-2.5-flash-preview-tts',
 ];
-const VOICE = 'Umbriel';
+const VOICE = 'Charon';
 
-const STYLE_PREFIX = `Read aloud as Magnus Carlsen: calm Scandinavian male, light Norwegian accent, dry understated delivery, casual coach reviewing a game. Natural rhythm and pauses — never robotic. Speak only the text after the colon, nothing else:
+const STYLE_PREFIX = `# AUDIO PROFILE: Magnus
+## Norwegian chess grandmaster reviewing a game
 
+## THE SCENE
+Quiet study after a rapid. Soft room, board between you and a student. Intimate, low-energy, conversational — not a broadcast, not hype.
+
+### DIRECTOR'S NOTES
+Style:
+* Dry, understated Scandinavian male. Calm confidence. Slight wry humor. Never theatrical, never American radio coach.
+* Soft mid-low chest voice. Relaxed jaw. Matter-of-fact, like thinking aloud at the board.
+Pace: Unhurried. Natural pauses between thoughts. Never rushed, never robotic.
+Accent: Light Oslo / Eastern Norwegian English. Soft consonants, slight Scandinavian vowel rhythm. Speak English only — do not switch to Norwegian.
+
+#### TRANSCRIPT
 `;
 
 function endpoint(model) {

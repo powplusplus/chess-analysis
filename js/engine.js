@@ -119,7 +119,6 @@ export async function resolveEngineConfig(mode) {
 
   const js = assetUrl(build.file, sameOrigin);
   const wasm = build.wasm ? assetUrl(build.wasm, sameOrigin) : null;
-  const tag = wantMt ? `${threads}× thr` : '1 thr';
   return {
     mode: ENGINE_MODES[mode] ? mode : 'balanced',
     depth: base.depth,
@@ -128,7 +127,7 @@ export async function resolveEngineConfig(mode) {
     threads,
     js,
     wasm,
-    label: `${base.label} (${pool} eng, ${tag})`,
+    label: base.label,
     sameOrigin,
     multiThread: wantMt,
   };

@@ -142,7 +142,8 @@ export function classifyMove(ctx) {
   const accuracy = moveAccuracy(drop);
   const moverCp = mover === 'w' ? cpBefore : -cpBefore;
 
-  const isBest = before.best && uci === before.best;
+  const bestUci = before.best || (before.lines[0] && before.lines[0].pv[0]) || null;
+  const isBest = !!(bestUci && uci === bestUci);
 
   // Second-best line, for "only move" detection.
   let gap = 0;
@@ -198,5 +199,5 @@ export function classifyMove(ctx) {
   }
 
   return { cls, cpBefore, cpAfter, wBefore, wAfter, drop, accuracy, gap, isBest, book, sacrifice,
-           bestUci: before.best, bestPv: before.lines[0] ? before.lines[0].pv : [] };
+           bestUci, bestPv: before.lines[0] ? before.lines[0].pv : [] };
 }

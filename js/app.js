@@ -391,6 +391,7 @@ function startReview(pgn, meta, opts = {}) {
   state.coachBusy = false;
   state.coachTargetKey = null;
   stopCoachSpeech();
+  stopAutoplay();
   state.gameId = meta?.id || gameIdFromUrl(meta?.url) || null;
   state.pgnLocal = !!opts.localPgn;
 
@@ -528,8 +529,10 @@ function animatePlyChange(fromPly, toPly) {
 function drawArrow(rep) {
   const svg = $('board-overlay');
   svg.innerHTML = '';
+  // Hide when you played engine best (or book). Near-best (cls=best, !isBest)
+  // still gets an arrow — matches detail "Best was …".
   if (!state.showArrow || !rep || !rep.bestUci) return;
-  if (rep.cls === 'best' || rep.cls === 'brilliant' || rep.cls === 'great' || rep.cls === 'book') return;
+  if (rep.isBest || rep.cls === 'book') return;
 
   const from = rep.bestUci.slice(0, 2), to = rep.bestUci.slice(2, 4);
   const c = (sq) => {
@@ -915,17 +918,21 @@ function stopAutoplay() {
   setPlayIcon(false);
 }
 
+function autoplayTick() {
+  if (!state.autoplay || state.animating) return;
+  if (state.ply >= state.moves.length) { stopAutoplay(); return; }
+  goto(state.ply + 1);
+}
+
 function startAutoplay() {
   if (!state.moves.length) return;
   if (state.ply >= state.moves.length) goto(0, { animate: false, sound: false });
   state.autoplay = true;
   setPlayIcon(true);
   if (state.autoplayTimer) clearInterval(state.autoplayTimer);
-  state.autoplayTimer = setInterval(() => {
-    if (!state.autoplay || state.animating) return;
-    if (state.ply >= state.moves.length) { stopAutoplay(); return; }
-    goto(state.ply + 1);
-  }, 900);
+  // Step once now — setInterval alone waits a full period before first move.
+  autoplayTick();
+  state.autoplayTimer = setInterval(autoplayTick, 900);
 }
 
 function toggleAutoplay() {
@@ -1243,7 +1250,10 @@ $('ctl-arrow').classList.add('on');
 
 document.addEventListener('keydown', e => {
   if ($('screen-review').hidden) return;
-  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+  const tag = document.activeElement?.tagName;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+  // Space on a focused <button> also fires click — skip key handler or double-toggle.
+  if ((e.key === ' ' || e.code === 'Space') && tag === 'BUTTON') return;
   if (e.key === 'ArrowLeft') { stopAutoplay(); goto(state.ply - 1); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { stopAutoplay(); goto(state.ply + 1); e.preventDefault(); }
   else if (e.key === 'Home') { stopAutoplay(); goto(0, { animate: false }); }
