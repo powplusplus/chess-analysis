@@ -1,2 +1,2 @@
 /** Bump this on each deploy / release so the main-menu badge updates. */
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';

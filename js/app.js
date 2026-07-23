@@ -411,6 +411,19 @@ async function renderGames(user, games) {
         h2.textContent = 'Recent games';
         list.appendChild(h2);
       }
+    } else {
+      // No ongoing games surfaced. Real-time (blitz/rapid/bullet) games are the
+      // common case here, and Chess.com's public API doesn't expose them while
+      // they're being played — so say so, rather than looking silently broken.
+      const note = document.createElement('p');
+      note.className = 'games-note';
+      note.innerHTML =
+        `<span class="games-note-ico" aria-hidden="true">i</span>` +
+        `No live game to follow right now. Live-follow works for ongoing ` +
+        `<strong>Daily</strong> games; Chess.com's public API doesn't expose ` +
+        `real-time blitz, rapid or bullet games until they finish — those show ` +
+        `up under Recent games once played.`;
+      list.appendChild(note);
     }
     summaries.forEach(s => list.appendChild(recentCard(s)));
   };
