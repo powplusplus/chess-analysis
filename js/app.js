@@ -8,8 +8,8 @@ import {
   askCoach, buildGameOverviewPrompt, buildMovePrompt,
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
-import { playMoveSound, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech } from './tts.js';
+import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
+import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
 import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
@@ -47,6 +47,8 @@ const state = {
   pgnLocal: false,      // reviewing a pasted PGN
   autoplay: false,
   autoplayTimer: null,
+  autoplayGen: 0,       // bump on stop → drop in-flight ticks
+  animCancel: null,     // resolve/cancel current piece flyer
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -517,13 +519,24 @@ function animatePlyChange(fromPly, toPly) {
   flyer.style.transform = `translate(${b.x - a.x}px, ${b.y - a.y}px)`;
 
   return new Promise(resolve => {
+    let settled = false;
     const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       flyer.remove();
+      if (state.animCancel === done) state.animCancel = null;
       resolve();
     };
+    state.animCancel = done;
     flyer.addEventListener('transitionend', done, { once: true });
-    setTimeout(done, ANIM_MS + 40);
+    const timer = setTimeout(done, ANIM_MS + 40);
   });
+}
+
+function cancelPieceAnim() {
+  if (state.animCancel) state.animCancel();
+  state.animating = false;
 }
 
 function drawArrow(rep) {
@@ -902,37 +915,55 @@ function setPlayIcon(playing) {
   if (!btn) return;
   const playIco = btn.querySelector('.ctl-ico-play');
   const pauseIco = btn.querySelector('.ctl-ico-pause');
-  if (playIco) playIco.hidden = playing;
-  if (pauseIco) pauseIco.hidden = !playing;
-  btn.classList.toggle('playing', playing);
+  // SVGElement.hidden often won't sync the [hidden] attribute → CSS stays stale.
+  if (playIco) playIco.toggleAttribute('hidden', !!playing);
+  if (pauseIco) pauseIco.toggleAttribute('hidden', !playing);
+  btn.classList.toggle('playing', !!playing);
   btn.setAttribute('aria-pressed', playing ? 'true' : 'false');
-  btn.setAttribute('aria-label', playing ? 'Pause' : 'Play / Pause');
+  btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  btn.title = playing ? 'Pause (Space)' : 'Play (Space)';
 }
 
 function stopAutoplay() {
   state.autoplay = false;
+  state.autoplayGen++;
   if (state.autoplayTimer) {
-    clearInterval(state.autoplayTimer);
+    clearTimeout(state.autoplayTimer);
     state.autoplayTimer = null;
+  }
+  stopAllMoveSounds();
+  if (state.animating) {
+    cancelPieceAnim();
+    renderAll();
   }
   setPlayIcon(false);
 }
 
-function autoplayTick() {
-  if (!state.autoplay || state.animating) return;
+async function autoplayStep(gen) {
+  if (!state.autoplay || gen !== state.autoplayGen) return;
+  if (state.animating) {
+    state.autoplayTimer = setTimeout(() => autoplayStep(gen), 50);
+    return;
+  }
   if (state.ply >= state.moves.length) { stopAutoplay(); return; }
-  goto(state.ply + 1);
+  await goto(state.ply + 1);
+  if (!state.autoplay || gen !== state.autoplayGen) return;
+  state.autoplayTimer = setTimeout(() => autoplayStep(gen), 900);
 }
 
 function startAutoplay() {
   if (!state.moves.length) return;
   if (state.ply >= state.moves.length) goto(0, { animate: false, sound: false });
   state.autoplay = true;
+  state.autoplayGen++;
+  const gen = state.autoplayGen;
   setPlayIcon(true);
-  if (state.autoplayTimer) clearInterval(state.autoplayTimer);
-  // Step once now — setInterval alone waits a full period before first move.
-  autoplayTick();
-  state.autoplayTimer = setInterval(autoplayTick, 900);
+  if (state.autoplayTimer) {
+    clearTimeout(state.autoplayTimer);
+    state.autoplayTimer = null;
+  }
+  // Step once now — setTimeout alone waits a full period before first move.
+  autoplayStep(gen);
 }
 
 function toggleAutoplay() {
@@ -978,6 +1009,27 @@ function speakCoachBrowser(spoken, id) {
   }, 40);
 }
 
+function playCoachBlob(blob, id) {
+  return new Promise((resolve, reject) => {
+    if (id !== state.coachSpeakId) {
+      resolve();
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    state.coachAudio = audio;
+    const done = (err) => {
+      URL.revokeObjectURL(url);
+      if (state.coachAudio === audio) state.coachAudio = null;
+      if (err) reject(err);
+      else resolve();
+    };
+    audio.onended = () => done();
+    audio.onerror = () => done(new Error('audio play failed'));
+    audio.play().catch(done);
+  });
+}
+
 async function speakCoach(text) {
   stopCoachSpeech();
   const spoken = String(text || '').replace(/\s+/g, ' ').trim();
@@ -987,20 +1039,18 @@ async function speakCoach(text) {
   state.coachTtsAbort = ac;
 
   try {
-    const blob = await synthesizeCoachSpeech(spoken, ac.signal);
-    if (id !== state.coachSpeakId) return;
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    state.coachAudio = audio;
-    audio.onended = () => {
-      URL.revokeObjectURL(url);
-      if (state.coachAudio === audio) state.coachAudio = null;
-    };
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      if (state.coachAudio === audio) state.coachAudio = null;
-    };
-    await audio.play();
+    // First short chunk → audio ASAP; prefetch next while playing.
+    const chunks = splitTtsChunks(spoken);
+    let nextP = synthesizeCoachSpeech(chunks[0], ac.signal);
+    for (let i = 0; i < chunks.length; i++) {
+      if (id !== state.coachSpeakId) return;
+      const blob = await nextP;
+      if (id !== state.coachSpeakId) return;
+      if (i + 1 < chunks.length) {
+        nextP = synthesizeCoachSpeech(chunks[i + 1], ac.signal);
+      }
+      await playCoachBlob(blob, id);
+    }
   } catch (ex) {
     if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
     // Neural TTS unavailable → last-resort browser voice
@@ -1282,13 +1332,25 @@ function restoreEngineMode() {
 $('depth-select').onchange = () => {
   try { localStorage.setItem(MODE_KEY, getEngineMode()); } catch (_) {}
   if (state.pool) { try { state.pool.destroy(); } catch (_) {} state.pool = null; state.poolMode = null; }
+  warmEngineIdle();
   if (state.moves.length) runAnalysis();
 };
 restoreEngineMode();
-// Warm engine download while idle (COI + /sf → multi-thread path)
-const warmMode = () => { prefetchEngine(getEngineMode()).catch(() => {}); };
-if (typeof requestIdleCallback === 'function') requestIdleCallback(warmMode, { timeout: 4000 });
-else setTimeout(warmMode, 1200);
+// Warm download + boot first worker while idle (hide "Starting…" on first review)
+async function warmEngineIdle() {
+  const mode = getEngineMode();
+  try {
+    const cfg = await prefetchEngine(mode);
+    if (state.pool || state.running) return;
+    const pool = new EnginePool(cfg);
+    if (state.pool || state.running) { pool.destroy(); return; }
+    state.pool = pool;
+    state.poolMode = mode;
+    await pool.warmUp();
+  } catch (_) { /* offline / blocked — analysis path retries */ }
+}
+if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { warmEngineIdle(); }, { timeout: 2500 });
+else setTimeout(() => { warmEngineIdle(); }, 600);
 
 /* ─────────────────── sidebar tabs ─────────────────── */
 function setSideTab(name) {
@@ -1379,8 +1441,8 @@ async function runAnalysis() {
       pool = new EnginePool(cfg);
       state.pool = pool;
       state.poolMode = mode;
-      await pool.warmUp();
     }
+    await pool.warmUp();
   } catch (ex) {
     if (token !== state.analysisToken) return;
     console.error('Engine start failed', ex);

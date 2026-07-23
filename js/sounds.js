@@ -2,6 +2,7 @@
 
 const BASE = new URL('../sounds/', import.meta.url);
 const cache = new Map();
+const active = new Set();
 
 function src(name) {
   return new URL(name + '.mp3', BASE).href;
@@ -16,7 +17,23 @@ function play(name) {
   }
   const a = base.cloneNode();
   a.volume = 0.85;
-  a.play().catch(() => {});
+  active.add(a);
+  const clear = () => active.delete(a);
+  a.addEventListener('ended', clear, { once: true });
+  a.addEventListener('error', clear, { once: true });
+  a.play().catch(clear);
+}
+
+/** Silence any in-flight move clips (e.g. pause autoplay). */
+export function stopAllMoveSounds() {
+  for (const a of active) {
+    try {
+      a.pause();
+      a.removeAttribute('src');
+      a.load();
+    } catch { /* ignore */ }
+  }
+  active.clear();
 }
 
 /** Pick + play chess.com sound for one move. */

@@ -4,3 +4,4 @@
 js/coach-config.js
 .vercel
 node_modules
+.sf-cache

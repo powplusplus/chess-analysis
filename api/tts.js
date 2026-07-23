@@ -1,22 +1,14 @@
 const TTS_MODELS = [
-  'gemini-2.5-pro-preview-tts',
+  'gemini-3.1-flash-tts-preview',
   'gemini-2.5-flash-preview-tts',
 ];
 const VOICE = 'Charon';
 
-const STYLE_PREFIX = `# AUDIO PROFILE: Magnus
-## Norwegian chess grandmaster reviewing a game
-
-## THE SCENE
-Quiet study after a rapid. Soft room, board between you and a student. Intimate, low-energy, conversational — not a broadcast, not hype.
-
+const STYLE_PREFIX = `# AUDIO PROFILE: Magnus — Norwegian chess coach
 ### DIRECTOR'S NOTES
-Style:
-* Dry, understated Scandinavian male. Calm confidence. Slight wry humor. Never theatrical, never American radio coach.
-* Soft mid-low chest voice. Relaxed jaw. Matter-of-fact, like thinking aloud at the board.
-Pace: Unhurried. Natural pauses between thoughts. Never rushed, never robotic.
-Accent: Light Oslo / Eastern Norwegian English. Soft consonants, slight Scandinavian vowel rhythm. Speak English only — do not switch to Norwegian.
-
+Dry understated Scandinavian male. Soft mid-low chest voice. Calm, wry, matter-of-fact at the board — not theatrical, not American radio.
+Pace: Unhurried with natural pauses.
+Accent: Light Oslo English. Soft consonants. English only.
 #### TRANSCRIPT
 `;
 

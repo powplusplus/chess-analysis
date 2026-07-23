@@ -300,9 +300,9 @@ body.reviewing .topbar{padding:6px 14px}
 .ctl.on{color:var(--accent-hi)}
 .ctl-group{display:flex;gap:3px}
 .ctl-group .ctl{padding:8px;min-width:40px;min-height:40px}
-.ctl-ico{width:24px;height:24px;display:block;fill:currentColor}
-.ctl-ico[hidden]{display:none}
-.ctl.playing{color:var(--txt)}
+.ctl-ico{width:20px;height:20px;display:block;fill:currentColor}
+.ctl-ico[hidden]{display:none !important}
+.ctl.playing{color:var(--accent-hi);background:var(--panel-2)}
 
 /* ============ sidebar - Chess.com Game Review panel ============ */
 .sidebar{

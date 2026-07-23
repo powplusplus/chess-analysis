@@ -102,26 +102,30 @@
             <div class="player-strip" id="player-bottom"></div>
 
             <div class="controls">
-              <button class="ctl" id="ctl-flip" type="button" title="Flip board (f)">⇅</button>
+              <button class="ctl" id="ctl-flip" type="button" title="Flip board (f)" aria-label="Flip board">
+                <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24"><path d="M7.5 3.5v13.1l-2.7-2.7-1.4 1.4L8.9 20l5.5-4.7-1.4-1.4-2.7 2.3V3.5h-2.8zm8.6 17V7.4l2.7 2.7 1.4-1.4L15.1 4l-5.5 4.7 1.4 1.4 2.7-2.3v13.1h2.8z"/></svg>
+              </button>
               <div class="ctl-group" role="group" aria-label="Move navigation">
-                <button class="ctl" id="ctl-first" type="button" title="Start (Home)" aria-label="First Move">
-                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m6.07 22h-.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93h.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93zm13.86-.87-.07.07c-1.13 1.13-1.6 1.13-2.73 0l-6.4-6.37c-1.73-1.77-1.73-3.9 0-5.67l6.4-6.37c1.13-1.13 1.6-1.13 2.73 0l.07.07c1.13 1.13 1.13 1.6 0 2.73l-6.37 6.4 6.37 6.4c1.13 1.13 1.13 1.6 0 2.73zm0 0"/></svg>
+                <button class="ctl" id="ctl-first" type="button" title="Start (Home)" aria-label="First move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 4h2.2v16H6V4zm3.8 8L18 5.2v13.6L9.8 12z"/></svg>
                 </button>
-                <button class="ctl" id="ctl-prev" type="button" title="Back (←)" aria-label="Previous Move">
-                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m16.27 21.13-.07.07c-1.13 1.13-1.6 1.13-2.73 0l-6.4-6.37c-1.73-1.77-1.73-3.9 0-5.67l6.4-6.37c1.13-1.13 1.6-1.13 2.73 0l.07.07c1.13 1.13 1.13 1.6 0 2.73l-6.37 6.4 6.37 6.4c1.13 1.13 1.13 1.6 0 2.73zm0 0"/></svg>
+                <button class="ctl" id="ctl-prev" type="button" title="Back (←)" aria-label="Previous move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24"><path d="M15.8 5.2 7.6 12l8.2 6.8V5.2z"/></svg>
                 </button>
-                <button class="ctl" id="ctl-play" type="button" title="Play / Pause (Space)" aria-label="Play / Pause" aria-pressed="false">
-                  <svg class="ctl-ico ctl-ico-play" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m20.5 12.8-12.73 8.73c-1.27.9-1.77.63-1.77-.93v-17.27c0-1.53.5-1.8 1.77-.9l12.73 8.77c.83.57.83 1.03 0 1.6zm0 0"/></svg>
-                  <svg class="ctl-ico ctl-ico-pause" aria-hidden="true" hidden viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m6.93 2h2.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93h-2.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93zm8 0h2.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93h-2.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93z"/></svg>
+                <button class="ctl" id="ctl-play" type="button" title="Play (Space)" aria-label="Play" aria-pressed="false">
+                  <svg class="ctl-ico ctl-ico-play" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 4.8v14.4L19.2 12 8 4.8z"/></svg>
+                  <svg class="ctl-ico ctl-ico-pause" aria-hidden="true" hidden viewBox="0 0 24 24"><path d="M6.4 4.8h3.6v14.4H6.4V4.8zm7.6 0h3.6v14.4h-3.6V4.8z"/></svg>
                 </button>
-                <button class="ctl" id="ctl-next" type="button" title="Forward (→)" aria-label="Next Move">
-                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m7.73 2.87.07-.07c1.13-1.13 1.6-1.13 2.73 0l6.4 6.37c1.73 1.77 1.73 3.9 0 5.67l-6.4 6.37c-1.13 1.13-1.6 1.13-2.73 0l-.07-.07c-1.13-1.13-1.13-1.6 0-2.73l6.37-6.4-6.37-6.4c-1.13-1.13-1.13-1.6 0-2.73zm0 0"/></svg>
+                <button class="ctl" id="ctl-next" type="button" title="Forward (→)" aria-label="Next move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24"><path d="M8.2 5.2v13.6L16.4 12 8.2 5.2z"/></svg>
                 </button>
-                <button class="ctl" id="ctl-last" type="button" title="End (End)" aria-label="Last Move">
-                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="m17.93 2h.13c1.6 0 1.93.33 1.93 1.93v16.13c0 1.6-.33 1.93-1.93 1.93h-.13c-1.6 0-1.93-.33-1.93-1.93v-16.13c0-1.6.33-1.93 1.93-1.93zm-13.86.87.07-.07c1.13-1.13 1.6-1.13 2.73 0l6.4 6.37c1.73 1.77 1.73 3.9 0 5.67l-6.4 6.37c-1.13 1.13-1.6 1.13-2.73 0l-.07-.07c-1.13-1.13-1.13-1.6 0-2.73l6.37-6.4-6.37-6.4c-1.13-1.13-1.13-1.6 0-2.73zm0 0"/></svg>
+                <button class="ctl" id="ctl-last" type="button" title="End (End)" aria-label="Last move">
+                  <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 5.2v13.6L14.2 12 6 5.2zM15.8 4h2.2v16h-2.2V4z"/></svg>
                 </button>
               </div>
-              <button class="ctl" id="ctl-arrow" type="button" title="Toggle best-move arrow (a)">➔</button>
+              <button class="ctl on" id="ctl-arrow" type="button" title="Toggle best-move arrow (a)" aria-label="Best-move arrow">
+                <svg class="ctl-ico" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 11.2h11.2l-3.4-3.4 1.4-1.4 5.8 5.8-5.8 5.8-1.4-1.4 3.4-3.4H4v-2z"/></svg>
+              </button>
             </div>
           </div>
         </div>

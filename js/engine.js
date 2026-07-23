@@ -66,6 +66,11 @@ export function canUseThreads() {
 
 async function probeSameOriginSf() {
   if (sameOriginSf != null) return sameOriginSf;
+  // COOP/COEP deploys (`serve.py`, Vercel) always ship `/sf` proxy — skip RTT.
+  if (globalThis.crossOriginIsolated) {
+    sameOriginSf = true;
+    return true;
+  }
   try {
     const r = await fetch(`${SF_LOCAL}/stockfish-18-lite-single.js`, {
       method: 'HEAD',
@@ -151,9 +156,38 @@ async function openEngineCache() {
   try { return await caches.open(CACHE_NAME); } catch (_) { return null; }
 }
 
-/** Load ArrayBuffer from Cache API or network; store on miss. */
-async function loadAsset(url, onProgress) {
-  const cache = await openEngineCache();
+/** Stream body for progress; optionally keep buffer (blob path) or discard (HTTP-cache warm). */
+async function readBody(res, onProgress, keep) {
+  const total = Number(res.headers.get('content-length')) || 0;
+  if (!res.body || !res.body.getReader) {
+    const buf = await res.arrayBuffer();
+    onProgress?.(buf.byteLength, buf.byteLength);
+    return keep ? buf : null;
+  }
+  const reader = res.body.getReader();
+  const chunks = keep ? [] : null;
+  let loaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (chunks) chunks.push(value);
+    loaded += value.byteLength;
+    onProgress?.(loaded, total);
+  }
+  onProgress?.(total || loaded, total || loaded);
+  if (!keep) return null;
+  const out = new Uint8Array(loaded);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out.buffer;
+}
+
+/**
+ * Load asset. `keepBuffer` false → only warm browser HTTP cache (MT same-origin workers
+ * re-fetch URL; holding 110MB NNUE in main-thread RAM only fights WASM compile).
+ */
+async function loadAsset(url, onProgress, keepBuffer = true) {
+  const cache = keepBuffer ? await openEngineCache() : null;
   if (cache) {
     try {
       const hit = await cache.match(url);
@@ -165,33 +199,12 @@ async function loadAsset(url, onProgress) {
     } catch (_) { /* fall through to network */ }
   }
 
-  const res = await fetch(url);
+  // force-cache: second worker / retry hits disk cache (chess.com-like)
+  const res = await fetch(url, { cache: 'force-cache' });
   if (!res.ok) throw new Error('Engine download failed (' + res.status + ') for ' + url);
-  const total = Number(res.headers.get('content-length')) || 0;
 
-  let buf;
-  if (!res.body || !res.body.getReader) {
-    buf = await res.arrayBuffer();
-    onProgress?.(buf.byteLength, buf.byteLength);
-  } else {
-    const reader = res.body.getReader();
-    const chunks = [];
-    let loaded = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      loaded += value.byteLength;
-      onProgress?.(loaded, total);
-    }
-    const out = new Uint8Array(loaded);
-    let off = 0;
-    for (const c of chunks) { out.set(c, off); off += c.byteLength; }
-    buf = out.buffer;
-    onProgress?.(total || loaded, total || loaded);
-  }
-
-  if (cache) {
+  const buf = await readBody(res, onProgress, keepBuffer);
+  if (keepBuffer && cache && buf) {
     try {
       await cache.put(url, new Response(buf.slice(0), {
         headers: { 'Content-Type': mimeFor(url), 'Content-Length': String(buf.byteLength) },
@@ -210,8 +223,8 @@ export function prefetchEngine(mode, onProgress) {
     const cfg = await resolveEngineConfig(mode);
     const urls = cfg.wasm ? [cfg.js, cfg.wasm] : [cfg.js];
 
-    // Same-origin MT: browser HTTP cache enough; still warm + progress.
-    // Single-thread cross-origin: also need blob URLs for Worker.
+    // Same-origin MT: HTTP cache enough for Worker URL loads — don't keep NNUE in RAM.
+    // ST / cross-origin: blob URLs required for Worker.
     const needBlobs = !cfg.sameOrigin || !cfg.multiThread;
 
     if (needBlobs && urls.every(u => blobUrls.has(u))) {
@@ -246,10 +259,14 @@ export function prefetchEngine(mode, onProgress) {
         loadedArr[i] = loaded;
         if (total > 0) { sizes[i] = total; known[i] = true; }
         report();
-      });
+      }, needBlobs);
       if (!fromCache) anyNetwork = true;
-      if (!known[i]) { sizes[i] = buf.byteLength; known[i] = true; loadedArr[i] = buf.byteLength; }
-      if (needBlobs) ensureBlobUrl(url, buf);
+      if (buf && !known[i]) {
+        sizes[i] = buf.byteLength;
+        known[i] = true;
+        loadedArr[i] = buf.byteLength;
+      }
+      if (needBlobs && buf) ensureBlobUrl(url, buf);
       report();
     }));
 
@@ -317,6 +334,7 @@ class Engine {
       this.readyReject = rej;
     });
     this._booted = false;
+    this._threadsArmed = false;
     this._readyTimer = setTimeout(() => {
       if (this.readyResolve) {
         this.readyReject?.(new Error('Stockfish start timeout'));
@@ -345,10 +363,16 @@ class Engine {
     this._booted = true;
     this.send('setoption name MultiPV value ' + MULTIPV);
     this.send('setoption name Hash value ' + this.cfg.hash);
+    // Defer Threads → readyok without pthread/WASM stampede (set on first search)
+    this.send('isready');
+  }
+
+  _armThreads() {
+    if (this._threadsArmed) return;
+    this._threadsArmed = true;
     if (this.cfg.multiThread && this.cfg.threads > 1) {
       this.send('setoption name Threads value ' + this.cfg.threads);
     }
-    this.send('isready');
   }
 
   _onLine(line) {
@@ -399,6 +423,7 @@ class Engine {
         reject(new Error('engine busy'));
         return;
       }
+      this._armThreads();
       this.pending = { resolve, lines: {} };
       this.send('position fen ' + fen);
       this.send('go depth ' + depth);
@@ -438,15 +463,42 @@ export class EnginePool {
     this.engines = [];
     this.free = [];
     this.queue = [];
-    for (let i = 0; i < this.size; i++) {
-      const e = new Engine(cfg);
-      this.engines.push(e);
-      this.free.push(e);
-    }
+    this._dead = false;
+    this._growing = false;
+    // One engine first — chess.com-style. Rest spawn after readyok (no N× WASM stampede).
+    this._spawnOne();
   }
 
+  _spawnOne() {
+    const e = new Engine(this.cfg);
+    this.engines.push(e);
+    e.ready.then(() => {
+      if (this._dead) return;
+      this.free.push(e);
+      this._drain();
+    }).catch(() => {});
+    return e;
+  }
+
+  /** Wait for first engine only; grow pool in background. Idempotent. */
   async warmUp() {
-    await Promise.all(this.engines.map(e => e.ready));
+    if (!this.engines.length) this._spawnOne();
+    await this.engines[0].ready;
+    this._growInBackground();
+  }
+
+  _growInBackground() {
+    if (this._growing || this._dead) return;
+    if (this.engines.length >= this.size) return;
+    this._growing = true;
+    (async () => {
+      // Sequential: parallel WASM compile of full NNUE thrashs memory → slower overall.
+      while (!this._dead && this.engines.length < this.size) {
+        const e = this._spawnOne();
+        try { await e.ready; } catch (_) { break; }
+      }
+      this._growing = false;
+    })();
   }
 
   analyse(fen, depth) {
@@ -462,9 +514,18 @@ export class EnginePool {
       const job = this.queue.shift();
       eng.analyse(job.fen, job.depth)
         .then(job.resolve, job.reject)
-        .finally(() => { this.free.push(eng); this._drain(); });
+        .finally(() => {
+          if (!this._dead) this.free.push(eng);
+          this._drain();
+        });
     }
   }
 
-  destroy() { this.engines.forEach(e => e.destroy()); this.engines = []; this.free = []; this.queue = []; }
+  destroy() {
+    this._dead = true;
+    this.engines.forEach(e => e.destroy());
+    this.engines = [];
+    this.free = [];
+    this.queue = [];
+  }
 }
