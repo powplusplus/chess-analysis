@@ -5,6 +5,14 @@ move-by-move report with Brilliant / Great / Best / Excellent / Good / Book /
 Inaccuracy / Mistake / Miss / Blunder badges, per-side accuracy, an estimated
 game rating, an evaluation timeline and a move list.
 
+Ongoing games show up too. Entering a username lists any games the player is
+**currently** playing under "Ongoing games"; open one and it follows the game
+live - new moves are pulled from Chess.com every few seconds and only the new
+plies are analysed, so the board, eval bar, timeline and report stay in sync as
+the game is played. When the game ends the view swaps in the final, archived
+report. Chess.com's public API only exposes ongoing Daily/correspondence games,
+so real-time blitz/rapid appear once they land in the archive.
+
 Stockfish 18 runs locally in Web Workers - no server for engine analysis.
 Mode picks the build: Fast (asm), Balanced (Lite ~7MB), Deep (full ~110MB).
 Coach Overview uses Gemma 4 31B (thinking) via the Google Generative Language API.
@@ -46,7 +54,7 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 | `js/engine.js` | Stockfish 18 UCI wrapper + worker pool (asm / lite / full by mode) |
 | `js/classify.js` | win% model, accuracy, and the classification rules |
 | `js/book.js` | small opening book for the Book badge |
-| `js/chesscom.js` | public Chess.com API client |
+| `js/chesscom.js` | public Chess.com API client (archives + ongoing games) |
 | `js/icons.js` | the badge artwork (inline SVG) |
 | `js/app.js` | board, eval bar, timeline, move list, report panel, coach wiring |
 | `js/coach.js` | Coach Overview prompts + Gemma client |

@@ -68,6 +68,67 @@ export function gameIdFromUrl(url) {
   return m ? m[1] : null;
 }
 
+/**
+ * Games the player is *currently* playing. Chess.com's public API only exposes
+ * ongoing Daily/correspondence games here — real-time blitz/rapid appear only
+ * once archived — so this is what "live" analysis can follow as moves come in.
+ * Note the shape differs from the archive: `white`/`black` are player URLs, and
+ * `pgn`, `fen`, `turn` reflect the position as it stands right now.
+ */
+export async function fetchCurrentGames(username) {
+  const user = String(username || '').trim().toLowerCase();
+  if (!/^[\w.-]{2,30}$/.test(user)) return { user, games: [] };
+
+  let res;
+  try {
+    res = await fetch(`${API}/player/${encodeURIComponent(user)}/games`);
+  } catch {
+    return { user, games: [] };
+  }
+  if (!res.ok) return { user, games: [] };
+  const data = await res.json().catch(() => ({}));
+  const games = (data.games || []).filter(g => g.pgn && g.rules === 'chess');
+  return { user, games };
+}
+
+/** `https://api.chess.com/pub/player/<name>` → `<name>`. */
+function nameFromPlayerUrl(url) {
+  const s = String(url || '');
+  const slug = s.split('/').filter(Boolean).pop() || '';
+  return decodeURIComponent(slug) || 'Player';
+}
+
+/** Summarise an ongoing game from `fetchCurrentGames` for the picker/review. */
+export function summariseLive(game, user) {
+  const me = String(user || '').trim().toLowerCase();
+  const whiteName = nameFromPlayerUrl(game.white);
+  const blackName = nameFromPlayerUrl(game.black);
+  const meIsWhite = whiteName.toLowerCase() === me;
+  const turn = String(game.turn || '').toLowerCase(); // 'white' | 'black'
+  const mySeat = meIsWhite ? 'white' : 'black';
+
+  return {
+    white: { name: whiteName, rating: null },
+    black: { name: blackName, rating: null },
+    meIsWhite,
+    opponent: (meIsWhite ? blackName : whiteName) || '-',
+    live: true,
+    turn,
+    myTurn: turn === mySeat,
+    fen: game.fen || null,
+    result: null,
+    how: '',
+    shortHow: '',
+    headline: null,
+    timeClass: game.time_class || 'daily',
+    timeControl: formatTimeControl(game),
+    lastActivity: game.last_activity ? new Date(game.last_activity * 1000) : null,
+    pgn: game.pgn,
+    url: game.url,
+    id: gameIdFromUrl(game.url) || game.url || null,
+  };
+}
+
 /** Chess.com player.result → phrase after won / lost / drawn. */
 const HOW = {
   checkmated: 'by checkmate',
@@ -195,6 +256,12 @@ export function describeEndFromHeaders(headers, opts = {}) {
 function formatTimeControl(game) {
   const tc = String(game.time_control || '');
   let timeControl = tc;
+  // Daily/correspondence: "1/86400" = seconds per move (86400s = 1 day).
+  const daily = tc.match(/^(?:\d+\/)?(\d+)$/);
+  if ((game.time_class === 'daily' || tc.includes('/')) && daily) {
+    const days = Math.round(parseInt(daily[1], 10) / 86400);
+    return days >= 1 ? `${days} day${days === 1 ? '' : 's'}` : tc;
+  }
   const m = tc.match(/^(\d+)(?:\+(\d+(?:\.\d+)?)?)?$/);
   if (m) {
     const base = parseInt(m[1], 10);
