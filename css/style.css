@@ -163,15 +163,19 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
 .games-empty{color:var(--txt-dim);padding:24px;text-align:center}
 
 /* ============ review layout ============ */
+/* Lock the whole shell to the viewport in review mode so the board fits
+   instead of pushing the sidebar/coach off-screen. */
+body.reviewing .app-shell{height:100dvh;overflow:hidden}
 .app-main:has(.screen-review:not([hidden])){min-height:0;flex:1;overflow:hidden}
 body.reviewing{overflow:hidden}
 body.reviewing .topbar{padding:6px 14px}
 .screen-review{
   --sidebar-w:380px;
   --eval-w:18px;
-  --topbar-h:48px;
-  /* Fill available height (players + controls + gaps) — chess.com-sized */
-  --board-chrome:78px;
+  /* Measured chrome: topbar (padding + brand mark) and the board column's
+     players + controls + row gaps. Wrong values here overflow the viewport. */
+  --topbar-h:52px;
+  --board-chrome:108px;
   --board-max:calc(100dvh - var(--topbar-h) - var(--board-chrome) - 16px);
   display:flex;align-items:stretch;justify-content:center;
   gap:14px;padding:8px 12px;width:100%;flex:1;min-height:0;
@@ -191,6 +195,7 @@ body.reviewing .topbar{padding:6px 14px}
     calc(100vw - var(--rail) - var(--sidebar-w) - 40px),
     calc(var(--board-max) + var(--eval-w) + 8px)
   );
+  max-height:100%;
 }
 .board-stack{display:contents}
 .player-strip#player-top{grid-column:2;grid-row:1}
