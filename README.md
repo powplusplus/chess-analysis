@@ -75,7 +75,12 @@ percentage compared with the engine's best move:
 * **Brilliant** - engine best that sacs a piece (≥3 non-pawn, immediate or
   still down after 2 PV plies), holds/improves eval, leaves you ≥42% win,
   and wasn't already clearly better (<150 cp)
-* **Book** - the game is still following a known opening line
+* **Book** - the game is still following a known opening line (a comprehensive
+  book of theory, ~280 named lines up to 22 plies deep, covers the mainlines)
+
+The move panel also names the opening as you step through it - the label refines
+move-by-move (King's Pawn Opening → Ruy Lopez → Ruy Lopez: Morphy Defense → Ruy
+Lopez: Closed) and keeps the last known name once play leaves theory.
 
 Accuracy per move is `103.1668·e^(-0.04354·drop) − 3.1669`; the game figure blends
 the arithmetic and harmonic means. Estimated rating is fitted so ~76% accuracy
