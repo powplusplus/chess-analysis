@@ -2,7 +2,9 @@ const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 1_000_000;
-const THINK_LEVELS = ['MAX', 'HIGH'];
+// LOW thinking is plenty for a grounded 2-4 paragraph note and much faster than
+// MAX; HIGH is the fallback if a build rejects LOW.
+const THINK_LEVELS = ['LOW', 'HIGH'];
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -84,7 +86,7 @@ async function generateWithFallback(key, parts) {
     if (r.ok) return { data, status: 200 };
     const msg = data?.error?.message || '';
     last = { data, status: r.status };
-    if (!/thinkingLevel|ThinkingLevel|invalid.*MAX|Unsupported.*thinking/i.test(msg)) {
+    if (!/thinking[_ ]?level|invalid.*(MAX|LOW|HIGH)|unsupported.*thinking/i.test(msg)) {
       return last;
     }
   }

@@ -1,7 +1,12 @@
 // Gemini neural TTS for coach voice.
-// Prefer streamGenerateContent (3.1) → first audio ~2s. Batch waits full render (~audio length).
+// Prefer streamGenerateContent → first audio ~2s. Batch waits full render (~audio length).
 
-const STREAM_MODEL = 'gemini-3.1-flash-tts-preview';
+// Streaming models, tried in order. 3.1 sounds best but has a tiny free tier
+// (10 RPD); when it 429s we keep streaming with 2.5 instead of dropping to batch.
+const STREAM_MODELS = [
+  'gemini-3.1-flash-tts-preview',
+  'gemini-2.5-flash-preview-tts',
+];
 const BATCH_MODELS = [
   'gemini-2.5-flash-preview-tts',
   'gemini-3.1-flash-tts-preview',
@@ -142,21 +147,11 @@ async function callGeminiTts(key, model, text, signal) {
 }
 
 /**
- * Parse Gemini SSE (alt=sse) and yield PCM Uint8Array chunks + sampleRate.
+ * Parse a Gemini SSE (alt=sse) response and yield PCM Uint8Array chunks +
+ * sampleRate. Works for both the direct API and the /api/tts-stream proxy.
  * Odd-byte carry handled by caller (Web Audio Int16).
  */
-export async function* streamGeminiTts(key, text, signal) {
-  const spoken = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!spoken) throw new Error('Empty TTS text');
-
-  const url = `${endpoint(STREAM_MODEL, true)}?alt=sse&key=${encodeURIComponent(key)}`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(ttsBody(spoken)),
-    signal,
-  });
-
+async function* parseSseAudio(r) {
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
     const err = new Error(data?.error?.message || `TTS stream ${r.status}`);
@@ -208,11 +203,40 @@ export async function* streamGeminiTts(key, text, signal) {
   if (!gotAudio) throw new Error('Empty TTS stream');
 }
 
-// Static serve.py has no /api/tts — skip after first miss for this session.
+/** Direct streaming call for one model (browser key). */
+async function* streamGeminiTtsDirect(key, model, text, signal) {
+  const url = `${endpoint(model, true)}?alt=sse&key=${encodeURIComponent(key)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(ttsBody(text)),
+    signal,
+  });
+  yield* parseSseAudio(r);
+}
+
+/** Streaming through the same-origin proxy (deployed site, no browser key). */
+async function* streamGeminiTtsProxy(text, signal) {
+  const r = await fetch('/api/tts-stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+    signal,
+  });
+  yield* parseSseAudio(r);
+}
+
+function isQuotaErr(ex) {
+  return /quota|rate|RESOURCE_EXHAUSTED|429|503/i.test(ex?.message || '') || ex?.status === 429 || ex?.status === 503;
+}
+
+// Static serve.py has no /api/tts(-stream) — skip after first miss this session.
 let proxyKnownMiss = false;
+let streamProxyKnownMiss = false;
 let cachedApiKey = null;
-// 3.1 free tier is tiny (10 RPD). After quota fail, skip stream for session.
-let streamQuotaMiss = false;
+// Per-model streaming quota tracking. 3.1's free tier is tiny (10 RPD); once it
+// 429s we drop just that model and keep streaming with 2.5 for the session.
+const streamQuotaMiss = new Set();
 
 async function getApiKey() {
   if (cachedApiKey !== null) return cachedApiKey;
@@ -277,26 +301,63 @@ export async function synthesizeCoachSpeech(text, signal) {
 }
 
 /**
- * Stream coach speech (3.1). Yields { pcm, sampleRate }.
- * Throws if key missing / quota / stream unsupported — caller falls back to batch.
+ * Stream coach speech. Yields { pcm, sampleRate } as audio arrives (~2s TTFB).
+ *
+ * With a browser key: streams the API directly, trying 3.1 then 2.5 so a 3.1
+ * quota miss keeps us streaming instead of dropping to slow batch.
+ * Without one (deployed site): streams through the /api/tts-stream proxy.
+ * Throws only when no streaming path works — caller then falls back to batch.
  */
 export async function* streamCoachSpeech(text, signal) {
   const spoken = String(text || '').replace(/\s+/g, ' ').trim();
   if (!spoken) throw new Error('Empty TTS text');
-  if (streamQuotaMiss) throw new Error('TTS stream quota');
 
   const key = await getApiKey();
-  if (!key || key.includes('your_google')) {
-    throw new Error('TTS needs GOOGLE_API_KEY');
+  const hasBrowserKey = !!(key && !key.includes('your_google'));
+
+  // No browser key: use the streaming proxy (skipped after a known miss, e.g.
+  // static serve.py which has no /api route).
+  if (!hasBrowserKey) {
+    if (streamProxyKnownMiss) throw new Error('TTS stream unavailable');
+    let started = false;
+    try {
+      for await (const chunk of streamGeminiTtsProxy(spoken, signal)) {
+        started = true;
+        yield chunk;
+      }
+      return;
+    } catch (ex) {
+      if (ex.name === 'AbortError') throw ex;
+      // No route / server key missing → give up on the proxy for this session.
+      if (!started && (ex.status === 404 || ex.status === 405
+        || /GOOGLE_API_KEY|not configured|Failed to fetch|NetworkError|Load failed/i.test(ex.message || ''))) {
+        streamProxyKnownMiss = true;
+      }
+      throw ex;
+    }
   }
 
-  try {
-    yield* streamGeminiTts(key, spoken, signal);
-  } catch (ex) {
-    if (ex.name === 'AbortError') throw ex;
-    if (/quota|rate|RESOURCE_EXHAUSTED|429/i.test(ex.message || '') || ex.status === 429) {
-      streamQuotaMiss = true;
+  const models = STREAM_MODELS.filter(m => !streamQuotaMiss.has(m));
+  if (!models.length) throw new Error('TTS stream quota');
+
+  let lastErr;
+  for (const model of models) {
+    let started = false;
+    try {
+      for await (const chunk of streamGeminiTtsDirect(key, model, spoken, signal)) {
+        started = true;
+        yield chunk;
+      }
+      return;
+    } catch (ex) {
+      if (ex.name === 'AbortError') throw ex;
+      lastErr = ex;
+      if (isQuotaErr(ex)) streamQuotaMiss.add(model);
+      // Already emitted audio for this model — don't restart on another and
+      // double the voice; let the caller decide.
+      if (started) throw ex;
+      // Otherwise try the next streaming model.
     }
-    throw ex;
   }
+  throw lastErr || new Error('TTS stream failed');
 }
