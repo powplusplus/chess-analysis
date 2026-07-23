@@ -4,7 +4,9 @@ const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 1_000_000; // ~1MB raw base64 decode budget per image
-const THINK_LEVELS = ['MAX', 'HIGH'];
+// LOW thinking is plenty for a grounded 2-4 paragraph note and much faster than
+// MAX; HIGH is the fallback if a build rejects LOW.
+const THINK_LEVELS = ['LOW', 'HIGH'];
 
 async function loadApiKey() {
   try {
@@ -198,7 +200,7 @@ function genConfig(thinkingLevel) {
 }
 
 function isThinkingLevelError(msg) {
-  return /thinkingLevel|ThinkingLevel|invalid.*MAX|Unsupported.*thinking/i.test(msg || '');
+  return /thinking[_ ]?level|invalid.*(MAX|LOW|HIGH)|unsupported.*thinking/i.test(msg || '');
 }
 
 export async function askCoach(prompt, signal, images) {
