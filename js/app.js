@@ -970,6 +970,7 @@ async function runAnalysis() {
 function buildReport(idx, before, after) {
   const mv = state.moves[idx];
   const stmAfter = mv.fenAfter.split(' ')[1];
+  const prevSame = idx >= 2 ? state.reports[idx - 2] : null;
   return classifyMove({
     before: { fen: mv.fenBefore, sideToMove: mv.color, best: before.best, lines: before.lines },
     after: {
@@ -980,6 +981,8 @@ function buildReport(idx, before, after) {
     uci: mv.uci,
     san: mv.san,
     sansSoFar: state.moves.slice(0, idx + 1).map(m => m.san),
+    wBeforePrev: prevSame?.wBefore,
+    hasPrev: !!prevSame,
   });
 }
 
