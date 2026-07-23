@@ -1,6 +1,6 @@
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
 import { EnginePool } from './engine.js';
-import { icon, colorOf, labelOf, ORDER } from './icons.js';
+import { icon, colorOf, labelOf } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
 import { fetchRecentGames, summarise } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
@@ -19,11 +19,18 @@ const state = {
   meta: null,
   pool: null,
   running: false,
+  talliesExpanded: false,
+  tallyCursor: {},  // key -> move index last jumped to
 };
+
+// Chess.com highlights: primary rows always visible; rest behind "Show more"
+const TALLY_PRIMARY = ['brilliant', 'great', 'best', 'mistake', 'miss', 'blunder'];
+const TALLY_SECONDARY = ['excellent', 'good', 'book', 'inaccuracy'];
 
 /* ─────────────────── screens ─────────────────── */
 function show(name) {
   for (const s of ['search', 'games', 'review']) $('screen-' + s).hidden = (s !== name);
+  document.body.classList.toggle('reviewing', name === 'review');
 }
 
 function goHome() { stopAnalysis(); show('search'); $('input-user').focus(); }
@@ -115,6 +122,8 @@ function startReview(pgn, meta) {
   state.meta.opening = headers.ECOUrl ? prettyOpening(headers.ECOUrl) : (headers.Opening || null);
   state.meta.eco = headers.ECO || null;
   state.flipped = meta ? !meta.meIsWhite : false;
+  state.talliesExpanded = false;
+  state.tallyCursor = {};
 
   show('review');
   buildBoard();
@@ -240,14 +249,21 @@ function currentCp() {
 function renderEvalBar() {
   const cp = currentCp();
   const bar = $('evalbar');
-  const fill = $('evalbar-white');
+  const fill = $('evalbar-fill');
   const num = $('evalbar-num');
-  if (cp === null) { fill.style.height = '50%'; num.textContent = '—'; bar.classList.remove('neg'); return; }
+  bar.classList.toggle('flipped', state.flipped);
+  if (cp === null) {
+    fill.style.height = '50%';
+    num.textContent = '—';
+    bar.classList.remove('neg');
+    return;
+  }
+  // fill always measures white's share; flipped bar grows from top instead
   const pct = winPct(cp);
   fill.style.height = pct.toFixed(1) + '%';
   const mateIn = state.evals[state.ply].mate;
   num.textContent = mateIn ? 'M' + Math.abs(mateIn) : (Math.abs(cp) / 100).toFixed(1);
-  bar.classList.toggle('neg', cp < 0);
+  bar.classList.toggle('neg', state.flipped ? cp > 0 : cp < 0);
 }
 
 /* ─────────────────── move list ─────────────────── */
@@ -307,9 +323,40 @@ function fmtCp(cp) {
 }
 
 /* ─────────────────── report panel ─────────────────── */
+function jumpToClass(cls, color) {
+  const idxs = [];
+  state.reports.forEach((r, i) => {
+    if (!r || r.cls !== cls) return;
+    if (color && state.moves[i].color !== color) return;
+    idxs.push(i);
+  });
+  if (!idxs.length) return;
+
+  const key = cls + ':' + (color || '*');
+  const cur = state.tallyCursor[key];
+  let pos = idxs.indexOf(cur);
+  // Prefer next move after current ply when starting a new cycle
+  if (pos < 0) {
+    const after = idxs.findIndex(i => i + 1 > state.ply);
+    pos = after >= 0 ? after - 1 : -1;
+  }
+  const next = idxs[(pos + 1) % idxs.length];
+  state.tallyCursor[key] = next;
+  goto(next + 1);
+
+  // highlight active tally row briefly
+  document.querySelectorAll('.tally.active').forEach(el => el.classList.remove('active'));
+  const row = document.querySelector(`.tally[data-cls="${cls}"]`);
+  if (row) row.classList.add('active');
+}
+
 function renderReport() {
   const done = state.reports.filter(Boolean);
-  if (!done.length) { $('report').hidden = true; return; }
+  if (!done.length) {
+    $('report').hidden = true;
+    $('tally-more').hidden = true;
+    return;
+  }
   $('report').hidden = false;
 
   $('rep-white-name').textContent = state.meta.white.name;
@@ -330,15 +377,54 @@ function renderReport() {
   $('rating-white').textContent = estimateRating(aw) ?? '—';
   $('rating-black').textContent = estimateRating(ab) ?? '—';
 
+  const order = [...TALLY_PRIMARY.slice(0, 3), ...TALLY_SECONDARY, ...TALLY_PRIMARY.slice(3)];
+  // Chess.com order: Brilliant, Great, Best, [Excellent, Good, Book, Inaccuracy], Mistake, Miss, Blunder
   const t = $('tallies');
-  t.innerHTML = ORDER.map(cls => {
+  t.innerHTML = '';
+  for (const cls of order) {
     const w = counts.w[cls] || 0, b = counts.b[cls] || 0;
-    return `<div class="tally">
-      <span class="tally-n ${w ? '' : 'zero'}" style="${w ? 'color:' + colorOf(cls) : ''}">${w}</span>
-      <span class="tally-label">${icon(cls)}${labelOf(cls)}</span>
-      <span class="tally-n ${b ? '' : 'zero'}" style="${b ? 'color:' + colorOf(cls) : ''}">${b}</span>
-    </div>`;
-  }).join('');
+    const secondary = TALLY_SECONDARY.includes(cls);
+    const row = document.createElement('div');
+    row.className = 'tally' + (secondary ? ' secondary' : '');
+    row.dataset.cls = cls;
+    if (secondary && !state.talliesExpanded) row.hidden = true;
+
+    const nW = document.createElement('button');
+    nW.type = 'button';
+    nW.className = 'tally-n' + (w ? '' : ' zero');
+    nW.textContent = w;
+    if (w) nW.style.color = colorOf(cls);
+    nW.disabled = !w;
+    nW.title = w ? `Show ${labelOf(cls).toLowerCase()} moves for White` : '';
+    nW.onclick = e => { e.stopPropagation(); jumpToClass(cls, 'w'); };
+
+    const label = document.createElement('span');
+    label.className = 'tally-label';
+    label.innerHTML = `${icon(cls)}${labelOf(cls)}`;
+
+    const nB = document.createElement('button');
+    nB.type = 'button';
+    nB.className = 'tally-n' + (b ? '' : ' zero');
+    nB.textContent = b;
+    if (b) nB.style.color = colorOf(cls);
+    nB.disabled = !b;
+    nB.title = b ? `Show ${labelOf(cls).toLowerCase()} moves for Black` : '';
+    nB.onclick = e => { e.stopPropagation(); jumpToClass(cls, 'b'); };
+
+    row.title = `Show ${labelOf(cls).toLowerCase()} moves`;
+    row.onclick = () => jumpToClass(cls, null);
+
+    row.append(nW, label, nB);
+    t.appendChild(row);
+  }
+
+  const more = $('tally-more');
+  more.hidden = false;
+  more.textContent = state.talliesExpanded ? 'Show less' : 'Show more';
+  more.onclick = () => {
+    state.talliesExpanded = !state.talliesExpanded;
+    renderReport();
+  };
 
   const op = state.meta.opening;
   $('opening').innerHTML = op ? `Opening: <b>${esc(op)}</b>${state.meta.eco ? ' · ' + esc(state.meta.eco) : ''}` : '';
@@ -348,7 +434,7 @@ function renderReport() {
 function renderGraph() {
   const cv = $('graph');
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || 600, h = 110;
+  const w = cv.clientWidth || 360, h = 72;
   cv.width = w * dpr; cv.height = h * dpr;
   const g = cv.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
