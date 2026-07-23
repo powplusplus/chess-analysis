@@ -358,7 +358,7 @@ body.reviewing .topbar{padding:6px 14px}
 .tally.active{background:rgba(129,182,76,.15)}
 .tally-label{
   display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;
-  justify-content:flex-start;color:inherit;pointer-events:none;
+  justify-content:center;color:inherit;pointer-events:none;
 }
 .tally-label svg{width:17px;height:17px;flex:none}
 .tally-n{
