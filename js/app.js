@@ -3,9 +3,9 @@ import { EnginePool } from './engine.js';
 import { icon, colorOf, labelOf, ORDER } from './icons.js';
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
 import { fetchRecentGames, summarise } from './chesscom.js';
+import { pieceSvg } from './pieces.js';
 
 const $ = id => document.getElementById(id);
-const PIECE = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚' };
 const FILES = 'abcdefgh';
 
 const state = {
@@ -26,7 +26,9 @@ function show(name) {
   for (const s of ['search', 'games', 'review']) $('screen-' + s).hidden = (s !== name);
 }
 
-$('btn-new').onclick = () => { stopAnalysis(); show('search'); $('input-user').focus(); };
+function goHome() { stopAnalysis(); show('search'); $('input-user').focus(); }
+$('btn-new').onclick = goHome;
+$('rail-new').onclick = goHome;
 $('btn-back-search').onclick = () => show('search');
 
 $('form-user').onsubmit = async e => {
@@ -168,7 +170,7 @@ function renderBoard() {
     if (r === 7) html += `<span class="coord file">${name[0]}</span>`;
 
     const p = pos.get(name);
-    if (p) html += `<span class="piece ${p.color}">${PIECE[p.type]}</span>`;
+    if (p) html += `<span class="piece-wrap">${pieceSvg(p.color, p.type)}</span>`;
     if (rep && name === last.to) html += `<span class="badge">${icon(rep.cls, false)}</span>`;
     el.innerHTML = html;
   }
@@ -194,8 +196,8 @@ function drawArrow(rep) {
   const ex = b.x - ux * 34, ey = b.y - uy * 34;
   svg.innerHTML = `
     <defs><marker id="ah" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.4" markerHeight="4.4" orient="auto">
-      <path d="M0 0 L10 5 L0 10 z" fill="#81b64c"/></marker></defs>
-    <line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="#81b64c" stroke-width="15"
+      <path d="M0 0 L10 5 L0 10 z" fill="#9fcf3f"/></marker></defs>
+    <line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="#9fcf3f" stroke-width="15"
           stroke-linecap="round" marker-end="url(#ah)" opacity=".85"/>`;
 }
 
@@ -209,7 +211,7 @@ function renderPlayers() {
 
   const strip = (p, isWhite) => {
     const adv = isWhite ? mat : -mat;
-    return `<span class="pavatar">${isWhite ? '♔' : '♚'}</span>
+    return `<span class="pavatar"><span class="mini-piece">${pieceSvg(isWhite ? 'w' : 'b', 'k')}</span></span>
       <span class="pname">${esc(p.name)}</span>
       <span class="pelo">${p.rating ? '(' + p.rating + ')' : ''}</span>
       ${adv > 0 ? `<span class="padv">+${adv}</span>` : ''}`;
@@ -456,9 +458,17 @@ async function runAnalysis() {
   fill.style.width = '0%';
   text.textContent = 'Starting Stockfish…';
 
-  const pool = new EnginePool(3);
-  state.pool = pool;
-  await pool.warmUp();
+  let pool;
+  try {
+    pool = new EnginePool(2);
+    state.pool = pool;
+    await pool.warmUp();
+  } catch (ex) {
+    text.textContent = 'Engine failed to start. Reload and try again.';
+    fill.style.width = '0%';
+    state.running = false;
+    return;
+  }
   if (!state.running) return;
 
   const positions = [];

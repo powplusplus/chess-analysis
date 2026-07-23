@@ -62,6 +62,7 @@ Depth is adjustable in the sidebar: Fast (10), Balanced (13), Deep (16).
 ## Credits
 
 Stockfish is GPLv3; this app loads the JS build by Niklas Fiekas from jsDelivr
-and does not redistribute it. Move generation is chess.js (BSD). Icons, layout
-and code here are original — no Chess.com assets are used, and this is not
-affiliated with Chess.com.
+and does not redistribute it. Move generation is chess.js (BSD). Board colours
+match Chess.com's green theme. Piece artwork under `pieces/neo/` is Chess.com's
+default Neo set, cached locally for offline use. Layout and analysis code here
+are original — this is not affiliated with Chess.com.

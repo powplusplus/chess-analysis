@@ -6,142 +6,157 @@
 <title>Game Review — free chess analysis with Stockfish</title>
 <meta name="description" content="Paste a username, pick a game, get a full move-by-move review: accuracy, brilliant moves, blunders and an evaluation timeline. Stockfish runs in your browser.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2381b64c'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%23fff'%3E%E2%99%9E%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:opsz,wght@6..12,500;6..12,600;6..12,700;6..12,800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-<header class="topbar">
-  <a class="brand" href="./">
-    <span class="brand-mark">♞</span>
-    <span class="brand-name">Game Review</span>
-  </a>
-  <div class="topbar-right">
-    <button class="btn btn-ghost" id="btn-new">New game</button>
+<div class="app-shell">
+  <!-- Chess.com-style left rail -->
+  <nav class="rail" aria-label="Main">
+    <a class="rail-brand" href="./" title="Game Review">♞</a>
+    <a class="rail-item active" href="./" title="Review"><span class="rail-ico">✦</span><span class="rail-lbl">Review</span></a>
+    <button class="rail-item" id="rail-new" type="button" title="New game"><span class="rail-ico">＋</span><span class="rail-lbl">New</span></button>
+  </nav>
+
+  <div class="app-main">
+    <header class="topbar">
+      <a class="brand" href="./">
+        <span class="brand-mark">♞</span>
+        <span class="brand-name">Game Review</span>
+      </a>
+      <div class="topbar-right">
+        <button class="btn btn-ghost" id="btn-new" type="button">New game</button>
+      </div>
+    </header>
+
+    <!-- ───────────────── search ───────────────── -->
+    <main class="screen screen-search" id="screen-search">
+      <div class="hero">
+        <div class="hero-badge">Free · runs in your browser</div>
+        <h1>Game Review</h1>
+        <p class="hero-sub">Type a Chess.com username. Pick a game. Stockfish runs locally — nothing uploaded.</p>
+
+        <form class="search-row" id="form-user">
+          <input id="input-user" class="input" type="text" placeholder="Chess.com username" autocomplete="username" spellcheck="false" required>
+          <button class="btn btn-primary" type="submit">Find games</button>
+        </form>
+        <p class="search-error" id="search-error" hidden></p>
+
+        <details class="pgn-drop">
+          <summary>or paste a PGN</summary>
+          <form id="form-pgn">
+            <textarea id="input-pgn" class="input textarea" rows="6" placeholder="[Event &quot;Live Chess&quot;]&#10;1. e4 e5 2. Nf3 ..."></textarea>
+            <button class="btn btn-secondary" type="submit">Review this PGN</button>
+          </form>
+        </details>
+      </div>
+    </main>
+
+    <!-- ───────────────── game picker ───────────────── -->
+    <main class="screen screen-games" id="screen-games" hidden>
+      <div class="games-wrap">
+        <div class="games-head">
+          <h2 id="games-title">Recent games</h2>
+          <button class="btn btn-ghost btn-sm" id="btn-back-search" type="button">Change username</button>
+        </div>
+        <div class="games-list" id="games-list"></div>
+      </div>
+    </main>
+
+    <!-- ───────────────── review ───────────────── -->
+    <main class="screen screen-review" id="screen-review" hidden>
+
+      <section class="board-col">
+        <div class="player-strip" id="player-top"></div>
+
+        <div class="board-area">
+          <div class="evalbar" id="evalbar" title="Evaluation">
+            <div class="evalbar-black"></div>
+            <div class="evalbar-white" id="evalbar-white"></div>
+            <span class="evalbar-num" id="evalbar-num">0.0</span>
+          </div>
+
+          <div class="board-holder">
+            <div class="board" id="board"></div>
+            <svg class="board-overlay" id="board-overlay" viewBox="0 0 800 800" aria-hidden="true"></svg>
+          </div>
+        </div>
+
+        <div class="player-strip" id="player-bottom"></div>
+
+        <div class="graph-wrap">
+          <canvas id="graph" height="96"></canvas>
+        </div>
+
+        <div class="controls">
+          <button class="ctl" id="ctl-flip" type="button" title="Flip board (f)">⇅</button>
+          <div class="ctl-group">
+            <button class="ctl" id="ctl-first" type="button" title="Start (Home)">⏮</button>
+            <button class="ctl" id="ctl-prev" type="button" title="Back (←)">◀</button>
+            <button class="ctl" id="ctl-next" type="button" title="Forward (→)">▶</button>
+            <button class="ctl" id="ctl-last" type="button" title="End (End)">⏭</button>
+          </div>
+          <button class="ctl" id="ctl-arrow" type="button" title="Toggle best-move arrow (a)">➔</button>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-icon">✦</span>
+          <h2>Game Review</h2>
+          <select id="depth-select" class="depth-select" title="Engine depth">
+            <option value="10">Fast</option>
+            <option value="12" selected>Balanced</option>
+            <option value="15">Deep</option>
+          </select>
+        </div>
+
+        <div class="progress" id="progress" hidden>
+          <div class="progress-bar"><i id="progress-fill"></i></div>
+          <span class="progress-text" id="progress-text">Starting engine…</span>
+        </div>
+
+        <div class="report" id="report" hidden>
+          <div class="row row-players">
+            <span class="cell-w" id="rep-white-name">White</span>
+            <span class="cell-mid"></span>
+            <span class="cell-b" id="rep-black-name">Black</span>
+          </div>
+
+          <div class="row row-acc">
+            <span class="acc acc-w" id="acc-white">—</span>
+            <span class="cell-mid">Accuracy</span>
+            <span class="acc acc-b" id="acc-black">—</span>
+          </div>
+
+          <div class="tallies" id="tallies"></div>
+
+          <div class="row row-rating">
+            <span class="rating rating-w" id="rating-white">—</span>
+            <span class="cell-mid">Game rating</span>
+            <span class="rating rating-b" id="rating-black">—</span>
+          </div>
+
+          <div class="opening" id="opening"></div>
+        </div>
+
+        <div class="movelist-wrap">
+          <div class="movelist" id="movelist"></div>
+        </div>
+
+        <div class="move-detail" id="move-detail"></div>
+      </aside>
+    </main>
+
+    <footer class="foot">
+      <span>Analysis by <a href="https://github.com/niklasf/stockfish.js" target="_blank" rel="noopener">Stockfish</a> (GPLv3), compiled to JavaScript and running locally in your browser.</span>
+      <span>Game data from the public Chess.com API. Not affiliated with Chess.com.</span>
+    </footer>
   </div>
-</header>
-
-<!-- ───────────────── search ───────────────── -->
-<main class="screen screen-search" id="screen-search">
-  <div class="hero">
-    <h1>Review any game, move by move.</h1>
-    <p class="hero-sub">Type a Chess.com username. Pick a game. Stockfish runs in your browser — nothing is uploaded.</p>
-
-    <form class="search-row" id="form-user">
-      <input id="input-user" class="input" type="text" placeholder="Chess.com username" autocomplete="off" spellcheck="false" required>
-      <button class="btn btn-primary" type="submit">Find games</button>
-    </form>
-    <p class="search-error" id="search-error" hidden></p>
-
-    <details class="pgn-drop">
-      <summary>or paste a PGN</summary>
-      <form id="form-pgn">
-        <textarea id="input-pgn" class="input textarea" rows="6" placeholder="[Event &quot;Live Chess&quot;]&#10;1. e4 e5 2. Nf3 ..."></textarea>
-        <button class="btn btn-secondary" type="submit">Review this PGN</button>
-      </form>
-    </details>
-  </div>
-</main>
-
-<!-- ───────────────── game picker ───────────────── -->
-<main class="screen screen-games" id="screen-games" hidden>
-  <div class="games-wrap">
-    <div class="games-head">
-      <h2 id="games-title">Recent games</h2>
-      <button class="btn btn-ghost btn-sm" id="btn-back-search">Change username</button>
-    </div>
-    <div class="games-list" id="games-list"></div>
-  </div>
-</main>
-
-<!-- ───────────────── review ───────────────── -->
-<main class="screen screen-review" id="screen-review" hidden>
-
-  <section class="board-col">
-    <div class="player-strip" id="player-top"></div>
-
-    <div class="board-area">
-      <div class="evalbar" id="evalbar" title="Evaluation">
-        <div class="evalbar-black"></div>
-        <div class="evalbar-white" id="evalbar-white"></div>
-        <span class="evalbar-num" id="evalbar-num">0.0</span>
-      </div>
-
-      <div class="board-holder">
-        <div class="board" id="board"></div>
-        <svg class="board-overlay" id="board-overlay" viewBox="0 0 800 800" aria-hidden="true"></svg>
-      </div>
-    </div>
-
-    <div class="player-strip" id="player-bottom"></div>
-
-    <div class="graph-wrap">
-      <canvas id="graph" height="110"></canvas>
-    </div>
-
-    <div class="controls">
-      <button class="ctl" id="ctl-flip" title="Flip board (f)">⇅</button>
-      <div class="ctl-group">
-        <button class="ctl" id="ctl-first" title="Start (Home)">⏮</button>
-        <button class="ctl" id="ctl-prev" title="Back (←)">◀</button>
-        <button class="ctl" id="ctl-next" title="Forward (→)">▶</button>
-        <button class="ctl" id="ctl-last" title="End (End)">⏭</button>
-      </div>
-      <button class="ctl" id="ctl-arrow" title="Toggle best-move arrow (a)">➔</button>
-    </div>
-  </section>
-
-  <aside class="sidebar">
-    <div class="sidebar-head">
-      <span class="sidebar-icon">✦</span>
-      <h2>Game Review</h2>
-      <select id="depth-select" class="depth-select" title="Engine depth">
-        <option value="10">Fast</option>
-        <option value="13" selected>Balanced</option>
-        <option value="16">Deep</option>
-      </select>
-    </div>
-
-    <div class="progress" id="progress" hidden>
-      <div class="progress-bar"><i id="progress-fill"></i></div>
-      <span class="progress-text" id="progress-text">Starting engine…</span>
-    </div>
-
-    <div class="report" id="report" hidden>
-      <div class="row row-players">
-        <span class="cell-w" id="rep-white-name">White</span>
-        <span class="cell-mid"></span>
-        <span class="cell-b" id="rep-black-name">Black</span>
-      </div>
-
-      <div class="row row-acc">
-        <span class="acc acc-w" id="acc-white">—</span>
-        <span class="cell-mid">Accuracy</span>
-        <span class="acc acc-b" id="acc-black">—</span>
-      </div>
-
-      <div class="tallies" id="tallies"></div>
-
-      <div class="row row-rating">
-        <span class="rating rating-w" id="rating-white">—</span>
-        <span class="cell-mid">Game rating</span>
-        <span class="rating rating-b" id="rating-black">—</span>
-      </div>
-
-      <div class="opening" id="opening"></div>
-    </div>
-
-    <div class="movelist-wrap">
-      <div class="movelist" id="movelist"></div>
-    </div>
-
-    <div class="move-detail" id="move-detail"></div>
-  </aside>
-</main>
-
-<footer class="foot">
-  <span>Analysis by <a href="https://github.com/niklasf/stockfish.js" target="_blank" rel="noopener">Stockfish</a> (GPLv3), compiled to JavaScript and running locally in your browser.</span>
-  <span>Game data from the public Chess.com API. Not affiliated with Chess.com.</span>
-</footer>
+</div>
 
 <script type="module" src="js/app.js"></script>
 </body>

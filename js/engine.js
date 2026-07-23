@@ -9,21 +9,37 @@ class Engine {
     this.pending = null;
     this.readyResolve = null;
     this.ready = new Promise(res => { this.readyResolve = res; });
+    this._booted = false;
     this.worker.onmessage = e => this._onLine(typeof e.data === 'string' ? e.data : String(e.data));
+    this.worker.onerror = () => {
+      if (this.readyResolve) { this.readyResolve(); this.readyResolve = null; }
+    };
     this.send('uci');
-    this.send('setoption name MultiPV value ' + MULTIPV);
-    this.send('setoption name Threads value 1');
-    this.send('setoption name Hash value 32');
-    this.send('isready');
   }
 
   send(cmd) { this.worker.postMessage(cmd); }
 
+  _bootOptions() {
+    if (this._booted) return;
+    this._booted = true;
+    // stockfish.js@10 asm build: Hash max is 16 — higher values hang the engine.
+    this.send('setoption name MultiPV value ' + MULTIPV);
+    this.send('setoption name Hash value 16');
+    this.send('isready');
+  }
+
   _onLine(line) {
-    if (line.startsWith('readyok') || line.startsWith('uciok')) {
+    if (!line) return;
+
+    if (line.startsWith('uciok')) {
+      this._bootOptions();
+      return;
+    }
+    if (line.startsWith('readyok')) {
       if (this.readyResolve) { this.readyResolve(); this.readyResolve = null; }
       return;
     }
+
     const p = this.pending;
     if (!p) return;
 
@@ -45,8 +61,14 @@ class Engine {
   // Resolves with { best, lines:[{multipv, cp, mate, depth, pv:[uci..]}] }
   // Scores are from the side-to-move's point of view (raw UCI).
   analyse(fen, depth) {
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
+      if (this.pending) {
+        // Shouldn't happen with the pool; fail soft rather than deadlock.
+        reject(new Error('engine busy'));
+        return;
+      }
       this.pending = { resolve, lines: {} };
+      this.send('stop');
       this.send('position fen ' + fen);
       this.send('go depth ' + depth);
     });
@@ -76,7 +98,7 @@ function parseInfo(line) {
 export class EnginePool {
   constructor(size) {
     const hw = navigator.hardwareConcurrency || 4;
-    this.size = Math.max(1, Math.min(size ?? 3, Math.max(1, hw - 1), 4));
+    this.size = Math.max(1, Math.min(size ?? 2, Math.max(1, hw - 1), 3));
     this.engines = [];
     this.free = [];
     this.queue = [];
@@ -87,7 +109,14 @@ export class EnginePool {
     }
   }
 
-  async warmUp() { await Promise.all(this.engines.map(e => e.ready)); }
+  async warmUp() {
+    await Promise.all(this.engines.map(e =>
+      Promise.race([
+        e.ready,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Stockfish failed to start')), 20000)),
+      ])
+    ));
+  }
 
   analyse(fen, depth) {
     return new Promise((resolve, reject) => {
