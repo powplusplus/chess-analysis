@@ -37,7 +37,7 @@ export function buildGameOverviewPrompt(ctx) {
   const oppRating = meSide === 'w' ? ratingB : meSide === 'b' ? ratingW : null;
 
   const seatBlock = seat
-    ? `Reviewer seat: ${seat} (${youName}). Opponent: ${oppName} (${seat === 'White' ? 'Black' : 'White}).
+    ? `Reviewer seat: ${seat} (${youName}). Opponent: ${oppName} (${seat === 'White' ? 'Black' : 'White'}).
 Address the reviewer as "you". Coach THEIR play. Do not write a neutral both-sides report.`
     : `White is ${white}. Black is ${black}.
 No reviewer seat known. Keep the overview balanced.`;
