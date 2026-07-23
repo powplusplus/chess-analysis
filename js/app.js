@@ -4,8 +4,8 @@ import { icon, colorOf, labelOf, timeClassIcon, timeClassLabel } from './icons.j
 import { classifyMove, gameAccuracy, estimateRating, toWhiteCp, winPct } from './classify.js';
 import { openingName } from './book.js';
 import {
-  fetchRecentGames, fetchPlayers, summarise, gameIdFromUrl,
-  describeEnd, describeEndFromHeaders,
+  fetchRecentGames, fetchCurrentGames, fetchPlayers, summarise, summariseLive,
+  gameIdFromUrl, describeEnd, describeEndFromHeaders,
 } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
@@ -49,12 +49,22 @@ const state = {
   coachTtsAbort: null,
   user: null,           // chess.com username for current games list
   games: [],            // raw games from last fetch
+  liveGames: [],        // raw ongoing games from last fetch
   gameId: null,         // chess.com game id when reviewing
   pgnLocal: false,      // reviewing a pasted PGN
   autoplay: false,
   autoplayTimer: null,
   autoplayGen: 0,       // bump on stop → drop in-flight ticks
   animCancel: null,     // resolve/cancel current piece flyer
+  results: [],          // raw per-position engine results (for live extend)
+  cfg: null,            // engine cfg of the live pool (depth reuse)
+  live: false,          // following an ongoing game
+  liveUrl: null,        // chess.com url of the followed game
+  liveMeta: null,       // summariseLive() of the followed game
+  liveTimer: null,      // poll timeout handle
+  livePollGen: 0,       // bump to cancel in-flight polls
+  liveFinished: false,  // ongoing game has ended
+  liveUpdating: false,  // an incremental analysis pass is running
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -80,6 +90,7 @@ function readRoute() {
     game,
     ply: Number.isFinite(ply) && ply >= 0 ? ply : null,
     pgn: p.get('pgn') === '1',
+    live: p.get('live') === '1',
   };
 }
 
@@ -88,6 +99,7 @@ function buildUrl(params) {
   if (params.user) sp.set('user', params.user);
   if (params.game) sp.set('game', params.game);
   if (params.pgn) sp.set('pgn', '1');
+  if (params.live) sp.set('live', '1');
   if (params.ply != null && params.ply > 0) sp.set('ply', String(params.ply));
   const qs = sp.toString();
   return qs ? `${location.pathname}?${qs}` : (location.pathname || './');
@@ -117,6 +129,7 @@ function syncPlyUrl() {
     user: r.user,
     game: r.game,
     pgn: r.pgn,
+    live: r.live,
     ply: state.ply > 0 ? state.ply : null,
   }, { replace: true });
 }
@@ -125,6 +138,7 @@ function goHome() {
   stopAnalysis();
   state.user = null;
   state.games = [];
+  state.liveGames = [];
   state.gameId = null;
   state.pgnLocal = false;
   try { sessionStorage.removeItem(PGN_STORE); } catch (_) {}
@@ -138,9 +152,13 @@ let routeToken = 0;
 
 async function ensureGames(user) {
   if (state.user === user && state.games.length) return state.games;
-  const { user: u, games } = await fetchRecentGames(user);
+  const [{ user: u, games }, live] = await Promise.all([
+    fetchRecentGames(user),
+    fetchCurrentGames(user).then(r => r.games).catch(() => []),
+  ]);
   state.user = u;
   state.games = games;
+  state.liveGames = live;
   return games;
 }
 
@@ -158,6 +176,25 @@ async function applyRoute() {
     if (token !== routeToken) return;
     if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true, sound: false });
     return;
+  }
+
+  if (route.live && route.user && route.game) {
+    $('input-user').value = route.user;
+    $('search-error').hidden = true;
+    try {
+      const live = await ensureLiveGames(route.user);
+      if (token !== routeToken) return;
+      const hit = live.map(g => summariseLive(g, route.user))
+        .find(s => String(s.id) === String(route.game));
+      if (hit) {
+        if (state.liveUrl !== hit.url || !state.moves.length) startLiveReview(hit);
+        else show('review');
+        if (token !== routeToken) return;
+        if (route.ply != null) await goto(route.ply, { animate: false, skipUrl: true, sound: false });
+        return;
+      }
+      // No longer ongoing → fall through and load it from the archive.
+    } catch (_) { /* fall through to archived load */ }
   }
 
   if (route.user && route.game) {
@@ -298,48 +335,93 @@ async function enrichMetaPlayers(meta) {
 }
 
 /* ─────────────────── game picker ─────────────────── */
+function playersCol(s) {
+  return `<div class="game-players">
+    <span class="game-side">${avatarHtml(s.white, true, 'gavatar')}${titleBadge(s.white.title)}<span class="pname">${esc(s.white.name)}</span> <span class="game-elo">${s.white.rating ?? ''}</span></span>
+    <span class="game-side">${avatarHtml(s.black, false, 'gavatar')}${titleBadge(s.black.title)}<span class="pname">${esc(s.black.name)}</span> <span class="game-elo">${s.black.rating ?? ''}</span></span>
+  </div>`;
+}
+
 async function renderGames(user, games) {
   $('games-title').textContent = `Recent games - ${user}`;
   const list = $('games-list');
-  list.innerHTML = '';
-  if (!games.length) {
+  const liveSummaries = (state.liveGames || []).map(g => summariseLive(g, user));
+
+  if (!games.length && !liveSummaries.length) {
     list.innerHTML = '<p class="games-empty">No games found.</p>';
     return;
   }
 
   const summaries = games.map(g => summarise(g, user));
+
+  const recentCard = (s) => {
+    const card = document.createElement('button');
+    card.className = 'game-card';
+    card.innerHTML = `
+      <div class="game-tc" title="${esc(s.timeControl ? `${s.timeControl} · ${timeClassLabel(s.timeClass)}` : timeClassLabel(s.timeClass))}">${timeClassIcon(s.timeClass)}<span>${esc(timeClassLabel(s.timeClass))}</span></div>
+      ${playersCol(s)}
+      <span class="game-res-col">
+        <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
+        ${s.shortHow ? `<span class="game-how">${esc(s.shortHow)}</span>` : ''}
+      </span>
+      <span class="game-date">${s.date ? s.date.toLocaleDateString() : ''}</span>`;
+    card.onclick = () => {
+      if (!s.id) return;
+      startReview(s.pgn, s);
+      setUrl({ user, game: s.id });
+      setTitle({ user, game: s.id });
+    };
+    return card;
+  };
+
+  const liveCard = (s) => {
+    const card = document.createElement('button');
+    card.className = 'game-card game-card-live';
+    const turn = s.myTurn && s.meIsWhite != null
+      ? 'Your move'
+      : `${s.turn ? s.turn[0].toUpperCase() + s.turn.slice(1) : 'Someone'} to move`;
+    card.innerHTML = `
+      <div class="game-tc" title="${esc(s.timeControl ? `${s.timeControl} · ${timeClassLabel(s.timeClass)}` : timeClassLabel(s.timeClass))}">${timeClassIcon(s.timeClass)}<span>${esc(timeClassLabel(s.timeClass))}</span></div>
+      ${playersCol(s)}
+      <span class="game-res-col">
+        <span class="game-res res-live"><i class="live-dot"></i>Live</span>
+        <span class="game-how">${esc(turn)}</span>
+      </span>
+      <span class="game-date">${s.lastActivity ? s.lastActivity.toLocaleDateString() : ''}</span>`;
+    card.onclick = () => {
+      if (!s.id) return;
+      startLiveReview(s);
+      setUrl({ user, game: s.id, live: true });
+      setTitle({ user, game: s.id });
+    };
+    return card;
+  };
+
   const paint = () => {
     list.innerHTML = '';
-    summaries.forEach(s => {
-      const card = document.createElement('button');
-      card.className = 'game-card';
-      card.innerHTML = `
-        <div class="game-tc" title="${esc(s.timeControl ? `${s.timeControl} · ${timeClassLabel(s.timeClass)}` : timeClassLabel(s.timeClass))}">${timeClassIcon(s.timeClass)}<span>${esc(timeClassLabel(s.timeClass))}</span></div>
-        <div class="game-players">
-          <span class="game-side">${avatarHtml(s.white, true, 'gavatar')}${titleBadge(s.white.title)}<span class="pname">${esc(s.white.name)}</span> <span class="game-elo">${s.white.rating ?? ''}</span></span>
-          <span class="game-side">${avatarHtml(s.black, false, 'gavatar')}${titleBadge(s.black.title)}<span class="pname">${esc(s.black.name)}</span> <span class="game-elo">${s.black.rating ?? ''}</span></span>
-        </div>
-        <span class="game-res-col">
-          <span class="game-res res-${s.result}">${s.result === 'win' ? 'Win' : s.result === 'loss' ? 'Loss' : 'Draw'}</span>
-          ${s.shortHow ? `<span class="game-how">${esc(s.shortHow)}</span>` : ''}
-        </span>
-        <span class="game-date">${s.date ? s.date.toLocaleDateString() : ''}</span>`;
-      card.onclick = () => {
-        if (!s.id) return;
-        startReview(s.pgn, s);
-        setUrl({ user, game: s.id });
-        setTitle({ user, game: s.id });
-      };
-      list.appendChild(card);
-    });
+    if (liveSummaries.length) {
+      const h = document.createElement('div');
+      h.className = 'games-section';
+      h.innerHTML = `<span class="live-dot"></span>Ongoing games`;
+      list.appendChild(h);
+      liveSummaries.forEach(s => list.appendChild(liveCard(s)));
+      if (summaries.length) {
+        const h2 = document.createElement('div');
+        h2.className = 'games-section';
+        h2.textContent = 'Recent games';
+        list.appendChild(h2);
+      }
+    }
+    summaries.forEach(s => list.appendChild(recentCard(s)));
   };
 
   paint();
 
-  const names = summaries.flatMap(s => [s.white.name, s.black.name]);
+  const all = [...summaries, ...liveSummaries];
+  const names = all.flatMap(s => [s.white.name, s.black.name]);
   const profiles = await fetchPlayers(names);
   let changed = false;
-  for (const s of summaries) {
+  for (const s of all) {
     for (const side of ['white', 'black']) {
       const p = profiles.get(String(s[side].name || '').toLowerCase());
       if (!p) continue;
@@ -353,11 +435,11 @@ async function renderGames(user, games) {
 }
 
 /* ─────────────────── loading a game ─────────────────── */
-function startReview(pgn, meta, opts = {}) {
+/** PGN → move records, replaying to capture fenBefore/fenAfter per ply. */
+function movesFromPgn(pgn) {
   const c = new Chess();
   c.loadPgn(pgn);                       // throws on malformed PGN
   const history = c.history({ verbose: true });
-  if (!history.length) throw new Error('empty game');
 
   const replay = new Chess();
   const moves = history.map(h => {
@@ -371,12 +453,25 @@ function startReview(pgn, meta, opts = {}) {
       fenBefore, fenAfter: replay.fen(),
     };
   });
+  return { moves, replay };
+}
+
+function startReview(pgn, meta, opts = {}) {
+  stopLivePolling();
+  state.live = false;
+  state.liveUrl = null;
+  state.liveMeta = null;
+  state.liveFinished = false;
+
+  const { moves, replay } = movesFromPgn(pgn);
+  if (!moves.length) throw new Error('empty game');
 
   const headers = parseHeaders(pgn);
   state.chess = replay;
   state.moves = moves;
   state.evals = new Array(moves.length + 1).fill(null);
   state.reports = new Array(moves.length).fill(null);
+  state.results = new Array(moves.length + 1).fill(null);
   state.ply = 0;
   state.meta = meta || {
     white: {
@@ -437,6 +532,205 @@ function startReview(pgn, meta, opts = {}) {
     renderPlayers();
     if (!$('report').hidden) renderReport();
   });
+}
+
+/* ─────────────────── live game following ─────────────────── */
+const LIVE_POLL_MS = 12000;
+
+async function ensureLiveGames(user) {
+  const { user: u, games } = await fetchCurrentGames(user);
+  if (u) state.user = u;
+  state.liveGames = games;
+  return games;
+}
+
+/** Open an ongoing game and follow it as moves come in. */
+function startLiveReview(summary) {
+  startReview(summary.pgn, summary);   // clears any prior live state first
+  state.live = true;
+  state.liveUrl = summary.url;
+  state.liveMeta = summary;
+  state.liveFinished = false;
+  renderLiveStatus();
+  startLivePolling();
+}
+
+function startLivePolling() {
+  stopLivePolling();
+  const gen = ++state.livePollGen;
+  const tick = async () => {
+    if (gen !== state.livePollGen || !state.live) return;
+    await pollLiveOnce(gen);
+    if (gen !== state.livePollGen || !state.live || state.liveFinished) return;
+    state.liveTimer = setTimeout(tick, LIVE_POLL_MS);
+  };
+  state.liveTimer = setTimeout(tick, LIVE_POLL_MS);
+}
+
+function stopLivePolling() {
+  state.livePollGen++;
+  if (state.liveTimer) { clearTimeout(state.liveTimer); state.liveTimer = null; }
+}
+
+async function pollLiveOnce(gen) {
+  // Wait out the initial full pass / a previous incremental pass.
+  if (state.running || state.liveUpdating) return;
+
+  let games;
+  try {
+    ({ games } = await fetchCurrentGames(state.user || state.liveMeta?.white?.name || ''));
+  } catch { return; }
+  if (gen !== state.livePollGen || !state.live) return;
+
+  const raw = games.find(g => g.url === state.liveUrl);
+  if (!raw) {
+    // Gone from the current list → the game finished. Pull the final PGN from
+    // the archive so we get the result/termination, then stop following.
+    await finalizeLiveGame();
+    return;
+  }
+
+  const live = summariseLive(raw, state.user || '');
+  state.liveMeta = live;
+  await applyLiveUpdate(raw.pgn);
+  renderLiveStatus();
+}
+
+/** Diff the fresh PGN against what we have and analyse only the new plies. */
+async function applyLiveUpdate(pgn) {
+  let parsed;
+  try { parsed = movesFromPgn(pgn); } catch { return; }
+  const fresh = parsed.moves;
+  if (!fresh.length) return;
+
+  // Common prefix with the game we're already showing.
+  let common = 0;
+  while (common < state.moves.length && common < fresh.length &&
+         state.moves[common].uci === fresh[common].uci) common++;
+
+  // A takeback rewrote history → reload and re-analyse from scratch.
+  if (common < state.moves.length) {
+    const wasAtEnd = state.ply >= state.moves.length;
+    const meta = state.liveMeta;
+    state.live = false;                 // startReview would clear live state
+    startLiveReviewReload(pgn, meta, wasAtEnd);
+    return;
+  }
+  if (fresh.length === state.moves.length) return;  // nothing new
+
+  const oldN = state.moves.length;
+  const wasAtEnd = state.ply >= oldN;
+  state.moves = fresh;
+  state.chess = parsed.replay;
+  for (let i = oldN; i < fresh.length; i++) { state.evals.push(null); state.reports.push(null); }
+  while (state.results.length < fresh.length + 1) state.results.push(null);
+
+  await analyzeLivePositions(oldN);
+  if (!state.live) return;
+
+  // Refresh the end banner if the last move delivered mate/stalemate.
+  const inferred = inferEndFromBoard(state.chess, state.meta);
+  if (inferred && inferred.headline) Object.assign(state.meta, inferred);
+
+  if (wasAtEnd) goto(state.moves.length, { animate: true, sound: true });
+  else renderAll();
+}
+
+/** Analyse positions oldN+1 … N (position oldN is already in state.results). */
+async function analyzeLivePositions(oldN) {
+  const pool = state.pool;
+  const depth = state.cfg?.depth ?? ENGINE_MODES[getEngineMode()].depth;
+  if (!pool) return;
+  state.liveUpdating = true;
+  const token = state.analysisToken;
+  const newN = state.moves.length;
+  try {
+    for (let p = oldN + 1; p <= newN; p++) {
+      const fen = state.moves[p - 1].fenAfter;
+      const c = new Chess(fen);
+      let res;
+      if (c.isGameOver()) {
+        const stm = fen.split(' ')[1];
+        let cp = 0;
+        if (c.isCheckmate()) cp = stm === 'w' ? -10000 : 10000;
+        res = { best: null, lines: [], terminal: true, terminalCpWhite: cp };
+      } else {
+        res = await pool.analyse(fen, depth);
+      }
+      if (token !== state.analysisToken || !state.live) return;
+      state.results[p] = res;
+
+      const stm = fen.split(' ')[1];
+      const cpWhite = res.terminal ? res.terminalCpWhite
+                                   : (res.lines[0] ? toWhiteCp(res.lines[0], stm) : 0);
+      const mate = (!res.terminal && res.lines[0] && res.lines[0].mate != null) ? res.lines[0].mate : null;
+      state.evals[p] = { cpWhite, mate: mate === null ? null : (stm === 'w' ? mate : -mate) };
+    }
+    for (let idx = oldN; idx < newN; idx++) {
+      if (!state.reports[idx] && state.results[idx] && state.results[idx + 1]) {
+        state.reports[idx] = buildReport(idx, state.results[idx], state.results[idx + 1]);
+      }
+    }
+  } finally {
+    state.liveUpdating = false;
+  }
+}
+
+/** History diverged (takeback): rebuild the game, keep following. */
+function startLiveReviewReload(pgn, meta, followEnd) {
+  const summary = { ...meta, pgn };
+  startReview(pgn, summary);
+  state.live = true;
+  state.liveUrl = summary.url;
+  state.liveMeta = summary;
+  state.liveFinished = false;
+  if (followEnd) state.ply = state.moves.length;
+  renderLiveStatus();
+  startLivePolling();
+}
+
+/** Ongoing game left the current list → fetch its archived final form. */
+async function finalizeLiveGame() {
+  state.liveFinished = true;
+  stopLivePolling();
+  try {
+    const { games } = await fetchRecentGames(state.user, 12);
+    const hit = games.map(g => summarise(g, state.user))
+      .find(s => s.url === state.liveUrl || (s.id && String(s.id) === String(state.liveMeta?.id)));
+    if (hit) {
+      const wasAtEnd = state.ply >= state.moves.length;
+      state.gameId = hit.id;
+      startReview(hit.pgn, hit);        // full final review with result banner
+      if (wasAtEnd) state.ply = state.moves.length;
+      state.liveFinished = true;
+    }
+  } catch { /* keep what we have */ }
+  renderLiveStatus();
+}
+
+function renderLiveStatus() {
+  const pill = $('live-pill');
+  const label = $('live-status');
+  if (!pill || !label) return;
+  if (!state.live && !state.liveFinished) { pill.hidden = true; return; }
+  if (!$('screen-review') || $('screen-review').hidden) { pill.hidden = true; return; }
+
+  pill.hidden = false;
+  if (state.liveFinished) {
+    pill.classList.remove('is-live');
+    pill.classList.add('is-final');
+    label.textContent = 'Game over';
+    return;
+  }
+  pill.classList.add('is-live');
+  pill.classList.remove('is-final');
+  const m = state.liveMeta;
+  if (m && m.turn) {
+    const yours = m.myTurn && m.meIsWhite != null;
+    label.textContent = yours ? 'LIVE · your move' : `LIVE · ${m.turn} to move`;
+  } else {
+    label.textContent = 'LIVE';
+  }
 }
 
 function parseHeaders(pgn) {
@@ -971,6 +1265,7 @@ function renderAll() {
   renderMoves(); renderDetail(); renderEndBanner(); renderReport(); renderGraph();
   syncNavControls();
   syncCoachUi();
+  renderLiveStatus();
 }
 
 function syncNavControls() {
@@ -1612,7 +1907,13 @@ $('tab-moves').onclick = () => setSideTab('moves');
 function stopAnalysis() {
   state.running = false;
   state.analysisToken++;
-  if (state.pool) { state.pool.destroy(); state.pool = null; state.poolMode = null; }
+  stopLivePolling();
+  state.live = false;
+  state.liveFinished = false;
+  state.liveUrl = null;
+  state.liveMeta = null;
+  renderLiveStatus();
+  if (state.pool) { state.pool.destroy(); state.pool = null; state.poolMode = null; state.cfg = null; }
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
@@ -1638,6 +1939,7 @@ async function runAnalysis() {
   if (!n) return;
   state.evals = new Array(n + 1).fill(null);
   state.reports = new Array(n).fill(null);
+  state.results = new Array(n + 1).fill(null);
   state.tallyCursor = {};
   state.running = true;
 
@@ -1671,6 +1973,7 @@ async function runAnalysis() {
   if (token !== state.analysisToken || !state.running) return;
 
   const depth = cfg.depth;
+  state.cfg = cfg;
   fill.style.width = '40%';
   text.textContent = `Starting ${cfg.label}…`;
 
@@ -1702,7 +2005,7 @@ async function runAnalysis() {
   }
 
   let done = 0;
-  const results = new Array(n + 1);
+  const results = state.results;
   fill.style.width = '45%';
   text.textContent = `Analysing… 0 / ${n + 1}`;
 
@@ -1750,6 +2053,7 @@ async function runAnalysis() {
   state.running = false;
   prog.hidden = true;
   renderAll();
+  renderLiveStatus();
   // Keep pool warm for next game / mode re-run
 }
 

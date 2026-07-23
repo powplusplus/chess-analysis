@@ -190,6 +190,36 @@ h1,h2,h3{margin:0;font-weight:800;letter-spacing:-.01em}
 .game-date{color:var(--txt-faint);font-size:12.5px;white-space:nowrap}
 .games-empty{color:var(--txt-dim);padding:24px;text-align:center}
 
+/* ---- ongoing / live games ---- */
+.games-section{
+  display:flex;align-items:center;gap:8px;
+  font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--txt-faint);margin:14px 2px 2px;
+}
+.games-section:first-child{margin-top:0}
+.game-card-live{border-color:#7a2b2b}
+.game-card-live:hover{border-color:#a83a3a}
+.res-live{
+  display:flex;align-items:center;gap:6px;color:#ff7a7a !important;
+}
+.live-dot{
+  width:8px;height:8px;border-radius:50%;background:#ff4d4d;flex:none;display:inline-block;
+  box-shadow:0 0 0 0 rgba(255,77,77,.55);animation:live-pulse 1.6s ease-out infinite;
+}
+@keyframes live-pulse{
+  0%{box-shadow:0 0 0 0 rgba(255,77,77,.55)}
+  70%{box-shadow:0 0 0 7px rgba(255,77,77,0)}
+  100%{box-shadow:0 0 0 0 rgba(255,77,77,0)}
+}
+.live-pill{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:5px 11px;border-radius:999px;font-size:12px;font-weight:800;
+  letter-spacing:.04em;background:#3a2020;color:#ff9a9a;border:1px solid #6e2b2b;
+  white-space:nowrap;
+}
+.live-pill.is-final{background:#2a2825;color:var(--txt-dim);border-color:var(--line)}
+.live-pill.is-final .live-dot{background:#8c8a88;animation:none;box-shadow:none}
+
 /* ============ review layout ============ */
 /* Lock the whole shell to the viewport in review mode so the board fits
    instead of pushing the sidebar/coach off-screen. */
