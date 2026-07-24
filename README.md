@@ -58,8 +58,11 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 | `js/chesscom.js` | public Chess.com API client (archives + ongoing games) |
 | `js/icons.js` | the badge artwork (inline SVG) |
 | `js/app.js` | board, eval bar, timeline, move list, report panel, coach wiring |
-| `js/coach.js` | Coach Overview prompts + Gemma client |
+| `js/coach.js` | Coach Overview prompts + Gemma client (batch + streaming) |
+| `js/tts.js` | Gemini neural TTS client for the coach voice |
 | `api/coach.js` | Vercel proxy for Gemma (uses `GOOGLE_API_KEY`) |
+| `api/coach-stream.js` | streaming Gemma proxy — text arrives token-by-token so speech starts while the note is still being written |
+| `api/tts.js` / `api/tts-stream.js` | Vercel proxies for Gemini TTS (batch / streaming) |
 
 ### Classification rules
 
