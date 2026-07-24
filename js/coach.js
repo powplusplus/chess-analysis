@@ -285,6 +285,148 @@ function extractText(data) {
   return parts.filter(p => p.text).map(p => p.text).join('').trim();
 }
 
+/** Per-SSE-chunk text (not trimmed — deltas must keep their spacing). */
+function extractDelta(data) {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  return parts.filter(p => p.text && !p.thought).map(p => p.text).join('');
+}
+
+function streamEndpoint(model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent`;
+}
+
+/** Parse a Gemini SSE (alt=sse) response and yield incremental text deltas. */
+async function* parseSseText(r) {
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    const err = new Error(data?.error?.message || `Coach stream ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
+  if (!r.body) throw new Error('Coach stream empty body');
+
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let gotText = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buf.indexOf('\n\n')) >= 0) {
+      const event = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      for (const line of event.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let data;
+        try {
+          data = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        if (data?.error) {
+          const err = new Error(data.error.message || 'Coach stream error');
+          err.status = data.error.code;
+          throw err;
+        }
+        const delta = extractDelta(data);
+        if (delta) {
+          gotText = true;
+          yield delta;
+        }
+      }
+    }
+  }
+
+  if (!gotText) throw new Error('Empty coach stream');
+}
+
+// Static serve.py has no /api/coach-stream — skip after the first miss.
+let coachStreamProxyMiss = false;
+
+/**
+ * Stream the coach note, yielding text deltas as the model emits them so the UI
+ * (and TTS) can start immediately instead of waiting for the full render.
+ *
+ * Prefers the same-origin /api/coach-stream proxy (deployed site, key on
+ * server); falls back to a browser-key direct stream (local dev). Throws when
+ * no streaming path is available — callers then fall back to askCoach().
+ */
+export async function* streamCoach(prompt, signal, images) {
+  const imgs = sanitizeImages(images);
+
+  // 1) Same-origin proxy stream (preferred — key stays on server).
+  if (!coachStreamProxyMiss) {
+    let started = false;
+    try {
+      const r = await fetch('/api/coach-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, images: imgs.length ? imgs : undefined }),
+        signal,
+      });
+      for await (const delta of parseSseText(r)) {
+        started = true;
+        yield delta;
+      }
+      return;
+    } catch (ex) {
+      if (ex.name === 'AbortError') throw ex;
+      // Already emitted text — don't restart on another path and duplicate it.
+      if (started) throw ex;
+      // No route / missing server key → try the browser-key path. Otherwise the
+      // upstream genuinely failed; let it bubble so we don't silently retry.
+      if (ex.status === 404 || ex.status === 405
+        || /GOOGLE_API_KEY|not configured|Failed to fetch|NetworkError|Load failed/i.test(ex.message || '')) {
+        coachStreamProxyMiss = true;
+      } else {
+        throw ex;
+      }
+    }
+  }
+
+  // 2) Browser-key direct stream (local static: js/coach-config.js).
+  const key = await loadApiKey();
+  if (!key || key.includes('your_google')) {
+    throw new Error('Coach stream unavailable');
+  }
+  const parts = buildParts(prompt, imgs);
+  let lastErr = null;
+  for (const level of THINK_LEVELS) {
+    let started = false;
+    try {
+      const url = `${streamEndpoint(MODEL)}?alt=sse&key=${encodeURIComponent(key)}`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: genConfig(level),
+        }),
+        signal,
+      });
+      for await (const delta of parseSseText(r)) {
+        started = true;
+        yield delta;
+      }
+      return;
+    } catch (ex) {
+      if (ex.name === 'AbortError') throw ex;
+      lastErr = ex;
+      if (started) throw ex;
+      // Retry at the next thinking level only if this one was rejected.
+      if (!isThinkingLevelError(ex.message)) throw ex;
+    }
+  }
+  throw lastErr || new Error('Coach stream failed');
+}
+
 function tallyBits(reports) {
   const keys = ['brilliant', 'great', 'best', 'mistake', 'miss', 'blunder', 'inaccuracy'];
   const bits = [];

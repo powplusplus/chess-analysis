@@ -9,12 +9,12 @@ import {
 } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
-  askCoach, buildGameOverviewPrompt, buildMovePrompt,
+  askCoach, streamCoach, buildGameOverviewPrompt, buildMovePrompt,
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech, splitTtsChunks, streamCoachSpeech } from './tts.js';
+import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
 import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
@@ -1377,22 +1377,40 @@ function stopCoachSpeech() {
   } catch { /* ignore */ }
 }
 
+// Last-ditch robotic voice. Only ever used for a single segment whose Gemini
+// synthesis failed — never to replay a segment already spoken. Resolves when
+// the utterance ends so the queue stays ordered.
 function speakCoachBrowser(spoken, id) {
-  if (typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') return;
-  const u = new SpeechSynthesisUtterance(spoken);
-  u.rate = 0.96;
-  u.pitch = 0.92;
-  // Prefer a deeper en voice if available (still a fallback).
-  try {
-    const voices = speechSynthesis.getVoices() || [];
-    const pick = voices.find(v => /en(-|_)?(GB|US|AU)/i.test(v.lang) && /male|daniel|george|alex|david|fred/i.test(v.name))
-      || voices.find(v => /^en/i.test(v.lang));
-    if (pick) u.voice = pick;
-  } catch { /* ignore */ }
-  setTimeout(() => {
-    if (id !== state.coachSpeakId) return;
-    try { speechSynthesis.speak(u); } catch { /* ignore */ }
-  }, 40);
+  return new Promise((resolve) => {
+    if (id !== state.coachSpeakId
+      || typeof speechSynthesis === 'undefined'
+      || typeof SpeechSynthesisUtterance === 'undefined') {
+      resolve();
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(spoken);
+    u.rate = 0.96;
+    u.pitch = 0.92;
+    try {
+      const voices = speechSynthesis.getVoices() || [];
+      const pick = voices.find(v => /en(-|_)?(GB|US|AU)/i.test(v.lang) && /male|daniel|george|alex|david|fred/i.test(v.name))
+        || voices.find(v => /^en/i.test(v.lang));
+      if (pick) u.voice = pick;
+    } catch { /* ignore */ }
+    let settled = false;
+    let guard = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (guard) clearTimeout(guard);
+      resolve();
+    };
+    u.onend = finish;
+    u.onerror = finish;
+    // Safety net: some browsers never fire onend for long utterances.
+    guard = setTimeout(finish, Math.max(4000, spoken.length * 90));
+    try { speechSynthesis.speak(u); } catch { finish(); }
+  });
 }
 
 function playCoachBlob(blob, id) {
@@ -1416,114 +1434,88 @@ function playCoachBlob(blob, id) {
   });
 }
 
-/** Play streamed PCM (24kHz s16le mono) as it arrives — ~2s to first sound. */
-async function playCoachPcmStream(pcmStream, id) {
-  const ctx = new AudioContext();
-  state.coachAudioCtx = ctx;
-  if (ctx.state === 'suspended') {
-    try { await ctx.resume(); } catch { /* ignore */ }
-  }
-
-  // 300ms lead absorbs chunk jitter.
-  let playhead = ctx.currentTime + 0.3;
-  let carry = new Uint8Array(0);
-  let rate = 24000;
-  let scheduled = 0;
-
-  const schedulePcm = (bytes) => {
-    if (!bytes.length) return;
-    const merged = new Uint8Array(carry.length + bytes.length);
-    merged.set(carry);
-    merged.set(bytes, carry.length);
-    const usable = merged.length - (merged.length % 2);
-    carry = usable < merged.length ? merged.slice(usable) : new Uint8Array(0);
-    if (usable < 2) return;
-
-    const samples = usable / 2;
-    // Buffer at native PCM rate — AudioContext resamples on play.
-    const buf = ctx.createBuffer(1, samples, rate);
-    const ch = buf.getChannelData(0);
-    const view = new DataView(merged.buffer, merged.byteOffset, usable);
-    for (let i = 0; i < samples; i++) {
-      ch[i] = view.getInt16(i * 2, true) / 32768;
-    }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    const startAt = Math.max(playhead, ctx.currentTime + 0.02);
-    src.start(startAt);
-    playhead = startAt + buf.duration;
-    scheduled += buf.duration;
-  };
-
-  try {
-    for await (const chunk of pcmStream) {
-      if (id !== state.coachSpeakId) return;
-      if (chunk.sampleRate) rate = chunk.sampleRate;
-      schedulePcm(chunk.pcm);
-    }
-    if (id !== state.coachSpeakId) return;
-    const remain = playhead - ctx.currentTime;
-    if (remain > 0) {
-      await new Promise((resolve) => {
-        const ms = Math.ceil(remain * 1000) + 40;
-        const t = setTimeout(resolve, ms);
-        const iv = setInterval(() => {
-          if (id !== state.coachSpeakId) {
-            clearTimeout(t);
-            clearInterval(iv);
-            resolve();
-          }
-        }, 100);
-        setTimeout(() => clearInterval(iv), ms + 20);
-      });
-    }
-  } finally {
-    if (state.coachAudioCtx === ctx) {
-      try { await ctx.close(); } catch { /* ignore */ }
-      state.coachAudioCtx = null;
-    }
-  }
-  if (!scheduled) throw new Error('Empty TTS stream play');
-}
-
-async function speakCoachBatch(spoken, id, signal) {
-  // Short first chunk → audio ASAP; prefetch next while playing.
-  const chunks = splitTtsChunks(spoken);
-  let nextP = synthesizeCoachSpeech(chunks[0], signal);
-  for (let i = 0; i < chunks.length; i++) {
-    if (id !== state.coachSpeakId) return;
-    const blob = await nextP;
-    if (id !== state.coachSpeakId) return;
-    if (i + 1 < chunks.length) {
-      nextP = synthesizeCoachSpeech(chunks[i + 1], signal);
-    }
-    await playCoachBlob(blob, id);
-  }
-}
-
-async function speakCoach(text) {
+/**
+ * A gapless speech queue for one coach note. Segments (sentences, or groups of
+ * short ones) are pushed in as they become available — from a live text stream
+ * or a full string — and spoken strictly in order.
+ *
+ * Each segment is synthesized once in the good Gemini voice, with the next
+ * segment prefetched while the current one plays. A segment that fails to
+ * synthesize degrades to the robotic browser voice for THAT segment only; it
+ * never replays an earlier segment. That is the whole point: the old design
+ * restarted playback from the first sentence on any mid-note failure, which is
+ * what made the note replay its opening in the bad voice and then stall.
+ */
+function createCoachSpeaker() {
   stopCoachSpeech();
-  const spoken = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!spoken) return;
   const id = state.coachSpeakId;
   const ac = new AbortController();
   state.coachTtsAbort = ac;
+  const signal = ac.signal;
 
-  try {
-    // One stream for full text — first PCM ~2s (not wait full render).
-    await playCoachPcmStream(streamCoachSpeech(spoken, ac.signal), id);
-  } catch (ex) {
-    if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
-    try {
-      await speakCoachBatch(spoken, id, ac.signal);
-    } catch (ex2) {
-      if (ex2.name === 'AbortError' || id !== state.coachSpeakId) return;
-      speakCoachBrowser(spoken, id);
+  const queue = [];
+  let ended = false;
+  let wake = null;
+  const kick = () => { if (wake) { const w = wake; wake = null; w(); } };
+  const waitNext = () => new Promise(resolve => { wake = resolve; });
+  const synth = text => synthesizeCoachSpeech(text, signal);
+
+  const loop = (async () => {
+    // prefetch = { text, promise } for the segment after the current one.
+    let prefetch = null;
+    while (true) {
+      if (id !== state.coachSpeakId) return;
+      if (!queue.length) {
+        if (ended) return;
+        await waitNext();
+        continue;
+      }
+      const text = queue.shift();
+      let blob = null;
+      try {
+        blob = (prefetch && prefetch.text === text)
+          ? await prefetch.promise
+          : await synth(text);
+      } catch (ex) {
+        if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
+        blob = null; // good voice unavailable for this segment
+      }
+      if (id !== state.coachSpeakId) return;
+      // Start rendering the next segment while this one plays.
+      prefetch = queue.length
+        ? { text: queue[0], promise: synth(queue[0]).catch(() => null) }
+        : null;
+      if (blob) {
+        try {
+          await playCoachBlob(blob, id);
+        } catch { /* playback glitch — skip, keep the note moving */ }
+      } else {
+        await speakCoachBrowser(text, id);
+      }
     }
-  } finally {
-    if (state.coachTtsAbort === ac) state.coachTtsAbort = null;
-  }
+  })();
+  loop.finally(() => { if (state.coachTtsAbort === ac) state.coachTtsAbort = null; });
+
+  return {
+    id,
+    /** Enqueue more text to speak. Ignored once superseded by a newer note. */
+    push(text) {
+      if (id !== state.coachSpeakId) return;
+      const seg = String(text || '').replace(/\s+/g, ' ').trim();
+      if (!seg) return;
+      // splitTtsChunks keeps segments a sensible length for even prosody.
+      for (const chunk of splitTtsChunks(seg)) queue.push(chunk);
+      kick();
+    },
+    /** No more text is coming; the queue drains and stops. */
+    end() { ended = true; kick(); return loop; },
+  };
+}
+
+function speakCoach(text) {
+  const speaker = createCoachSpeaker();
+  speaker.push(text);
+  speaker.end();
 }
 
 function setCoachPlaceholder(msg, isErr = false) {
@@ -1667,14 +1659,20 @@ async function runCoachAnalyze() {
   }
 
   try {
-    const text = await askCoach(prompt, ac.signal, images);
+    let cleaned = await streamCoachToSpeech(prompt, images, ac.signal, reqId, cacheKey);
+    if (cleaned == null) {
+      // No streaming path available — fall back to a single non-streaming call.
+      const text = await askCoach(prompt, ac.signal, images);
+      if (reqId !== state.coachReqId) return;
+      cleaned = scrubCoachText(text);
+      if (!cleaned) throw new Error('Empty coach reply');
+      state.coachCache.set(cacheKey, cleaned);
+      setCoachText(cleaned);
+      speakCoach(cleaned);
+    }
     if (reqId !== state.coachReqId) return;
-    const cleaned = scrubCoachText(text);
-    state.coachCache.set(cacheKey, cleaned);
     state.coachBusy = false;
     state.coachTargetKey = null;
-    setCoachText(cleaned);
-    speakCoach(cleaned);
     syncCoachUi();
   } catch (ex) {
     if (ex.name === 'AbortError') return;
@@ -1684,6 +1682,76 @@ async function runCoachAnalyze() {
     setCoachPlaceholder(ex.message || 'Coach request failed.', true);
     syncCoachUi();
   }
+}
+
+/**
+ * Stream the coach note, rendering it live and speaking each sentence the
+ * moment it completes so audio starts while the model is still writing.
+ *
+ * Returns the finished (scrubbed) note on success, or null when no streaming
+ * path is available so the caller can fall back to a single non-streaming call.
+ * Throws on a genuine mid-stream failure (after text/audio already started) —
+ * restarting there would replay from the top, the very bug we're avoiding.
+ */
+async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
+  const speaker = createCoachSpeaker();
+  let full = '';
+  let spokenUpto = 0; // chars of `full` already handed to the speaker
+  let started = false;
+
+  // Flush complete sentences from the unspoken tail into the speaker. The first
+  // segment goes as soon as one sentence lands (fast first audio); later ones
+  // accumulate a bit so prosody isn't chopped sentence-by-sentence.
+  const flush = (final) => {
+    const pending = full.slice(spokenUpto);
+    if (final) {
+      const seg = scrubCoachText(pending);
+      if (seg) speaker.push(seg);
+      spokenUpto = full.length;
+      return;
+    }
+    const re = /[.!?]["')\]]?\s/g;
+    let end = -1;
+    let m;
+    while ((m = re.exec(pending))) end = m.index + m[0].length;
+    if (end <= 0) return;
+    const minLen = spokenUpto === 0 ? 1 : 90;
+    if (end < minLen) return;
+    const seg = scrubCoachText(pending.slice(0, end));
+    if (seg) speaker.push(seg);
+    spokenUpto += end;
+  };
+
+  try {
+    for await (const delta of streamCoach(prompt, signal, images)) {
+      if (reqId !== state.coachReqId) { speaker.end(); return full ? scrubCoachText(full) : ''; }
+      started = true;
+      full += delta;
+      setCoachText(scrubCoachText(full)); // live render as it writes
+      flush(false);
+    }
+  } catch (ex) {
+    speaker.end();
+    if (ex.name === 'AbortError') throw ex;
+    // Already produced text? Keep what we have instead of restarting (no replay).
+    if (full.trim()) {
+      flush(true);
+      const cleaned = scrubCoachText(full);
+      state.coachCache.set(cacheKey, cleaned);
+      setCoachText(cleaned);
+      return cleaned;
+    }
+    if (started) throw ex;     // stream broke with nothing usable
+    return null;               // no streaming path — let caller fall back
+  }
+
+  flush(true);
+  speaker.end();
+  const cleaned = scrubCoachText(full);
+  if (!cleaned) throw new Error('Empty coach reply');
+  state.coachCache.set(cacheKey, cleaned);
+  setCoachText(cleaned);
+  return cleaned;
 }
 
 async function makeMoveBoardImages() {
