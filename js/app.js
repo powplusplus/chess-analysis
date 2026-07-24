@@ -14,7 +14,7 @@ import {
 } from './coach.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
+import { synthesizeCoachSpeech, streamCoachSpeech } from './tts.js';
 import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
@@ -1413,38 +1413,22 @@ function speakCoachBrowser(spoken, id) {
   });
 }
 
-function playCoachBlob(blob, id) {
-  return new Promise((resolve, reject) => {
-    if (id !== state.coachSpeakId) {
-      resolve();
-      return;
-    }
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    state.coachAudio = audio;
-    const done = (err) => {
-      URL.revokeObjectURL(url);
-      if (state.coachAudio === audio) state.coachAudio = null;
-      if (err) reject(err);
-      else resolve();
-    };
-    audio.onended = () => done();
-    audio.onerror = () => done(new Error('audio play failed'));
-    audio.play().catch(done);
-  });
-}
-
 /**
- * A gapless speech queue for one coach note. Segments (sentences, or groups of
- * short ones) are pushed in as they become available — from a live text stream
- * or a full string — and spoken strictly in order.
+ * Gapless speech for one coach note. Text segments are pushed in as they become
+ * available (a live stream, or a full string) and spoken strictly in order.
  *
- * Each segment is synthesized once in the good Gemini voice, with the next
- * segment prefetched while the current one plays. A segment that fails to
- * synthesize degrades to the robotic browser voice for THAT segment only; it
- * never replays an earlier segment. That is the whole point: the old design
- * restarted playback from the first sentence on any mid-note failure, which is
- * what made the note replay its opening in the bad voice and then stall.
+ * Each segment is streamed from Gemini TTS and its PCM scheduled back-to-back on
+ * a single shared AudioContext playhead, so playback is continuous and first
+ * audio arrives about as fast as the model renders it — one request per segment,
+ * not one per sentence. Segments are independent: a failed one degrades to a
+ * batch render, then to the robotic browser voice, for THAT segment only —
+ * earlier audio is never replayed. (The bug this replaces restarted from the
+ * first sentence on any mid-note failure, so the opening replayed in the bad
+ * voice.)
+ *
+ * Segments are kept coarse (see the flush logic in streamCoachToSpeech): a note
+ * is ~1-2 TTS requests. Free-tier TTS quota is small, so per-sentence requests
+ * both slow playback and trip 429s that force the bad-voice fallback.
  */
 function createCoachSpeaker() {
   stopCoachSpeech();
@@ -1453,61 +1437,145 @@ function createCoachSpeaker() {
   state.coachTtsAbort = ac;
   const signal = ac.signal;
 
+  const live = () => id === state.coachSpeakId;
+
+  let ctx = null;
+  let playhead = 0;
+  let rate = 24000;
+  let carry = new Uint8Array(0); // odd-byte carry within a single segment
+
+  const ensureCtx = async () => {
+    if (ctx) return;
+    ctx = new AudioContext();
+    state.coachAudioCtx = ctx;
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch { /* ignore */ }
+    }
+    playhead = ctx.currentTime + 0.25; // small lead absorbs chunk jitter
+  };
+
+  // Schedule s16le mono PCM right after the current playhead.
+  const schedulePcm = (bytes) => {
+    if (!bytes || !bytes.length) return;
+    const merged = new Uint8Array(carry.length + bytes.length);
+    merged.set(carry);
+    merged.set(bytes, carry.length);
+    const usable = merged.length - (merged.length % 2);
+    carry = usable < merged.length ? merged.slice(usable) : new Uint8Array(0);
+    if (usable < 2) return;
+    const samples = usable / 2;
+    const buf = ctx.createBuffer(1, samples, rate);
+    const ch = buf.getChannelData(0);
+    const view = new DataView(merged.buffer, merged.byteOffset, usable);
+    for (let i = 0; i < samples; i++) ch[i] = view.getInt16(i * 2, true) / 32768;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    const startAt = Math.max(playhead, ctx.currentTime + 0.02);
+    src.start(startAt);
+    playhead = startAt + buf.duration;
+  };
+
+  // Decode a batch WAV blob and schedule it after the current playhead.
+  const scheduleBlob = async (blob) => {
+    await ensureCtx();
+    const audioBuf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(ctx.destination);
+    const startAt = Math.max(playhead, ctx.currentTime + 0.02);
+    src.start(startAt);
+    playhead = startAt + audioBuf.duration;
+  };
+
+  // Resolve once everything scheduled so far has finished playing.
+  const drain = () => new Promise((resolve) => {
+    const tick = () => {
+      if (!live() || !ctx || ctx.currentTime >= playhead) { resolve(); return; }
+      setTimeout(tick, 80);
+    };
+    tick();
+  });
+
+  const speakSegment = async (text) => {
+    carry = new Uint8Array(0);
+    let gotAudio = false;
+    // 1) Streaming TTS: fast first audio, one request.
+    try {
+      for await (const chunk of streamCoachSpeech(text, signal)) {
+        if (!live()) return;
+        if (chunk.sampleRate) rate = chunk.sampleRate;
+        if (chunk.pcm && chunk.pcm.length) gotAudio = true;
+        await ensureCtx();
+        schedulePcm(chunk.pcm);
+      }
+      return;
+    } catch (ex) {
+      if (ex.name === 'AbortError' || !live()) throw ex;
+      // Already played part of this segment — accept the truncation rather than
+      // re-rendering it and overlapping/replaying what was just heard.
+      if (gotAudio) return;
+    }
+    // 2) Batch render, this segment only (streaming path was down / quota).
+    try {
+      const blob = await synthesizeCoachSpeech(text, signal);
+      if (!live()) return;
+      await scheduleBlob(blob);
+      return;
+    } catch (ex) {
+      if (ex.name === 'AbortError' || !live()) throw ex;
+    }
+    // 3) Robotic browser voice, last resort. It can't share the AudioContext,
+    // so let scheduled audio finish first to avoid overlapping voices.
+    await drain();
+    if (!live()) return;
+    await speakCoachBrowser(text, id);
+  };
+
   const queue = [];
   let ended = false;
   let wake = null;
   const kick = () => { if (wake) { const w = wake; wake = null; w(); } };
   const waitNext = () => new Promise(resolve => { wake = resolve; });
-  const synth = text => synthesizeCoachSpeech(text, signal);
 
   const loop = (async () => {
-    // prefetch = { text, promise } for the segment after the current one.
-    let prefetch = null;
-    while (true) {
-      if (id !== state.coachSpeakId) return;
-      if (!queue.length) {
-        if (ended) return;
-        await waitNext();
-        continue;
-      }
-      const text = queue.shift();
-      let blob = null;
-      try {
-        blob = (prefetch && prefetch.text === text)
-          ? await prefetch.promise
-          : await synth(text);
-      } catch (ex) {
-        if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
-        blob = null; // good voice unavailable for this segment
-      }
-      if (id !== state.coachSpeakId) return;
-      // Start rendering the next segment while this one plays.
-      prefetch = queue.length
-        ? { text: queue[0], promise: synth(queue[0]).catch(() => null) }
-        : null;
-      if (blob) {
+    try {
+      while (true) {
+        if (!live()) return;
+        if (!queue.length) {
+          if (ended) break;
+          await waitNext();
+          continue;
+        }
+        const text = queue.shift();
         try {
-          await playCoachBlob(blob, id);
-        } catch { /* playback glitch — skip, keep the note moving */ }
-      } else {
-        await speakCoachBrowser(text, id);
+          await speakSegment(text);
+        } catch (ex) {
+          if (ex.name === 'AbortError' || !live()) return;
+          // Non-abort failure for this segment: skip it, keep the note going.
+        }
       }
+      await drain();
+    } finally {
+      if (ctx && state.coachAudioCtx === ctx) {
+        try { await ctx.close(); } catch { /* ignore */ }
+        if (state.coachAudioCtx === ctx) state.coachAudioCtx = null;
+      }
+      if (state.coachTtsAbort === ac) state.coachTtsAbort = null;
     }
   })();
-  loop.finally(() => { if (state.coachTtsAbort === ac) state.coachTtsAbort = null; });
 
   return {
     id,
-    /** Enqueue more text to speak. Ignored once superseded by a newer note. */
+    /** Enqueue a segment to speak. Ignored once superseded by a newer note. */
     push(text) {
-      if (id !== state.coachSpeakId) return;
+      if (!live()) return;
       const seg = String(text || '').replace(/\s+/g, ' ').trim();
       if (!seg) return;
-      // splitTtsChunks keeps segments a sensible length for even prosody.
-      for (const chunk of splitTtsChunks(seg)) queue.push(chunk);
+      queue.push(seg);
       kick();
     },
-    /** No more text is coming; the queue drains and stops. */
+    /** No more text is coming; drain and stop. */
     end() { ended = true; kick(); return loop; },
   };
 }
@@ -1700,8 +1768,10 @@ async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
   let started = false;
 
   // Flush complete sentences from the unspoken tail into the speaker. The first
-  // segment goes as soon as one sentence lands (fast first audio); later ones
-  // accumulate a bit so prosody isn't chopped sentence-by-sentence.
+  // segment goes as soon as one sentence lands (fast first audio); after that we
+  // wait for a big block (or the end) before flushing again, so a whole note is
+  // ~1-2 TTS requests — free-tier TTS quota is small and per-sentence requests
+  // trip 429s.
   const flush = (final) => {
     const pending = full.slice(spokenUpto);
     if (final) {
@@ -1715,7 +1785,7 @@ async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
     let m;
     while ((m = re.exec(pending))) end = m.index + m[0].length;
     if (end <= 0) return;
-    const minLen = spokenUpto === 0 ? 1 : 90;
+    const minLen = spokenUpto === 0 ? 1 : 350;
     if (end < minLen) return;
     const seg = scrubCoachText(pending.slice(0, end));
     if (seg) speaker.push(seg);
