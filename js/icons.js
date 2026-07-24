@@ -8,19 +8,21 @@ export const CLASSES = {
   excellent:  { label: 'Excellent',  color: 'var(--c-excellent)',  raw: '#a5d44f', glyph: 'check' },
   good:       { label: 'Good',       color: 'var(--c-good)',       raw: '#9fc277', glyph: 'check' },
   book:       { label: 'Book',       color: 'var(--c-book)',       raw: '#c49a6c', glyph: 'book'  },
+  forced:     { label: 'Forced',     color: 'var(--c-forced)',     raw: '#93918c', glyph: 'arrow' },
   inaccuracy: { label: 'Inaccuracy', color: 'var(--c-inaccuracy)', raw: '#ffd12a', glyph: 'quest_bang' },
   mistake:    { label: 'Mistake',    color: 'var(--c-mistake)',    raw: '#ff9a2e', glyph: 'quest' },
   miss:       { label: 'Miss',       color: 'var(--c-miss)',       raw: '#ff7a7a', glyph: 'cross' },
   blunder:    { label: 'Blunder',    color: 'var(--c-blunder)',    raw: '#f03530', glyph: 'quest2' },
 };
 
-export const ORDER = ['brilliant','great','best','excellent','good','book','inaccuracy','mistake','miss','blunder'];
+export const ORDER = ['brilliant','great','best','excellent','good','book','forced','inaccuracy','mistake','miss','blunder'];
 
 const GLYPHS = {
   star:  '<path fill="#fff" d="M18 7.4l2.9 6.1 6.6.9-4.8 4.7 1.2 6.6-5.9-3.2-5.9 3.2 1.2-6.6-4.8-4.7 6.6-.9z"/>',
   check: '<path fill="none" stroke="#fff" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round" d="M10.5 18.6l4.9 4.9 10.1-10.6"/>',
   cross: '<path fill="none" stroke="#fff" stroke-width="4.2" stroke-linecap="round" d="M11.5 11.5l13 13M24.5 11.5l-13 13"/>',
   book:  '<path fill="#fff" d="M17 11.4c-1.7-1.3-4.1-1.9-7.4-1.9H8.6v16h1c2.9 0 5.6.6 7.4 1.9zm2 16c1.8-1.3 4.5-1.9 7.4-1.9h1v-16h-1c-3.3 0-5.7.6-7.4 1.9z"/>',
+  arrow: '<path fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" d="M10 18h13M18 12l6 6-6 6"/>',
   bang1: '<text x="18" y="26.5" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="21" font-weight="900" fill="#fff" text-anchor="middle">!</text>',
   bang2: '<text x="18" y="26.5" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="21" font-weight="900" fill="#fff" text-anchor="middle">!!</text>',
   quest: '<text x="18" y="26.5" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="21" font-weight="900" fill="#fff" text-anchor="middle">?</text>',

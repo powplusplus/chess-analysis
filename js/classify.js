@@ -164,8 +164,18 @@ export function classifyMove(ctx) {
 
   const book = isBookMove(sansSoFar);
 
+  // Forced: the position offered a single legal move, so there was nothing to
+  // judge. Chess.com shows a neutral "Forced" badge for these instead of
+  // grading them (a forced-only move is never called a blunder, miss, or even
+  // brilliant). Book still wins when we're following theory.
+  let forced = false;
+  if (!book) {
+    try { forced = new Chess(before.fen).moves().length === 1; } catch (_) {}
+  }
+
   let cls;
   if (book) cls = 'book';
+  else if (forced) cls = 'forced';
   else if (isBest || drop < 0.5) cls = 'best';
   else if (drop < 2) cls = 'excellent';
   else if (drop < 5) cls = 'good';
@@ -174,7 +184,7 @@ export function classifyMove(ctx) {
   else cls = 'blunder';
 
   // A missed knockout: you were clearly winning and let it slip.
-  if (!book && drop >= 10) {
+  if (!book && !forced && drop >= 10) {
     const hadMate = before.lines[0] && before.lines[0].mate > 0;
     const stillMate = after.lines[0] && toWhiteCp(after.lines[0], mover === 'w' ? 'b' : 'w') !== null
       && Math.abs(cpAfter) > 9000 && winPctFor(cpAfter, mover) > 90;
@@ -184,7 +194,7 @@ export function classifyMove(ctx) {
   // Great: big outcome swing (incl. 2-ply capitalisation) or harsh only-move.
   // Near-best alone never enough — must be engine best.
   let sacrifice = false;
-  if (!book && isBest && drop <= 1) {
+  if (!book && !forced && isBest && drop <= 1) {
     const swingNow = isOutcomeSwing(wBefore, wAfter);
     const swingPrev = hasPrev && isOutcomeSwing(wBeforePrev, wAfter);
     const onlyMove = gap >= ONLY_MOVE_GAP
@@ -202,7 +212,7 @@ export function classifyMove(ctx) {
   // the runner-up rather than the played move, is what lets a sacrifice that
   // forces mate still qualify — the played line reads as +mate, but the quiet
   // alternative doesn't.
-  if (!book
+  if (!book && !forced
       && (isBest || drop < 0.5)
       && wAfter >= BRILLIANT_AFTER_MIN
       && wSecond < BRILLIANT_WINNING_MAX) {
