@@ -53,6 +53,7 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 |---|---|
 | `js/engine.js` | Stockfish 18 UCI wrapper + worker pool (asm / lite / full by mode) |
 | `js/classify.js` | win% model, accuracy, and the classification rules |
+| `js/sac.js` | static exchange evaluation + sacrifice detection (Brilliant) |
 | `js/book.js` | small opening book for the Book badge |
 | `js/chesscom.js` | public Chess.com API client (archives + ongoing games) |
 | `js/icons.js` | the badge artwork (inline SVG) |
@@ -72,9 +73,15 @@ percentage compared with the engine's best move:
   equal→winning, win% bands 35/65, ≥12% swing; also vs prior same-colour
   position) or is a harsh only-move (MultiPV gap ≥30%, 2nd-best <28%, not
   already winning)
-* **Brilliant** - engine best that sacs a piece (≥3 non-pawn, immediate or
-  still down after 2 PV plies), holds/improves eval, leaves you ≥42% win,
-  and wasn't already clearly better (<150 cp)
+* **Brilliant** - engine best (or practically best) that *sacrifices* material
+  and stays sound. The sacrifice test is what chess.com actually rewards: the
+  move leaves material en prise — a real offer the opponent could grab for a
+  net gain (static-exchange ≥2, i.e. an exchange sac and up) — even when best
+  play *declines* it, so a plain PV walk misses it. It must still be sound
+  (≥50% win after) and not just a flourish in a position you were already
+  winning without it (the second-best move is under ~80% win). Because that
+  last gate looks at the runner-up rather than the played move, a sacrifice
+  that forces mate still qualifies. Detection lives in `js/sac.js`.
 * **Book** - the game is still following a known opening line (a comprehensive
   book of theory, ~280 named lines up to 22 plies deep, covers the mainlines)
 
