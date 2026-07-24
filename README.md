@@ -2,7 +2,7 @@
 
 A Chess.com-style game review: enter a username, pick a recent game, and get a
 move-by-move report with Brilliant / Great / Best / Excellent / Good / Book /
-Inaccuracy / Mistake / Miss / Blunder badges, per-side accuracy, an estimated
+Forced / Inaccuracy / Mistake / Miss / Blunder badges, per-side accuracy, an estimated
 game rating, an evaluation timeline and a move list.
 
 Ongoing games show up too. Entering a username lists any games the player is
@@ -85,6 +85,9 @@ percentage compared with the engine's best move:
   winning without it (the second-best move is under ~80% win). Because that
   last gate looks at the runner-up rather than the played move, a sacrifice
   that forces mate still qualifies. Detection lives in `js/sac.js`.
+* **Forced** - the position had a single legal move, so there was no decision to
+  grade. Shown as a neutral badge and left out of the move summary; a forced move
+  is never called a blunder, miss, or brilliant. Book still wins if theory covers it.
 * **Book** - the game is still following a known opening line (a comprehensive
   book of theory, ~280 named lines up to 22 plies deep, covers the mainlines)
 

@@ -1209,7 +1209,7 @@ function renderGraph() {
   for (let i = 0; i < n; i++) {
     const rep = state.reports[i];
     if (!rep) continue;
-    if (['best', 'excellent', 'good', 'book'].includes(rep.cls)) continue;
+    if (['best', 'excellent', 'good', 'book', 'forced'].includes(rep.cls)) continue;
     const e = state.evals[i + 1];
     g.beginPath();
     g.arc(x(i + 1), y(e ? e.cpWhite : 0), 3.4, 0, Math.PI * 2);
