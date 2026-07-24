@@ -3,6 +3,7 @@
 
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.0.0/+esm';
 import { isBookMove } from './book.js';
+import { moveCreatesSacrifice } from './sac.js';
 
 const MATE_CP = 10000;
 const VALUES = { p: 1, n: 3, b: 3.2, r: 5, q: 9, k: 0 };
@@ -15,9 +16,10 @@ const GREAT_WINNING = 65;
 const GREAT_SWING_MIN = 12;       // must actually move win% by this much
 const ONLY_MOVE_GAP = 30;         // MultiPV gap (was 20)
 const ONLY_MOVE_SECOND_MAX = 28;  // 2nd-best clearly losing
-const BRILLIANT_CP_MAX = 150;     // not already clearly better (was 200)
-const BRILLIANT_AFTER_MIN = 42;   // not left in a bad seat
-const SAC_MIN = 3;
+const BRILLIANT_AFTER_MIN = 50;   // sacrifice must stay sound (>= equal for the mover)
+const BRILLIANT_WINNING_MAX = 80; // skip if you were already winning without the sac (~+3.7)
+const SAC_MIN = 3;                // full-piece drop (immediate / walked in the PV)
+const SAC_SEE_MIN = 2;            // net material offered en prise (exchange-sac and up)
 
 // Engine score -> centipawns from White's point of view.
 export function toWhiteCp(line, sideToMove) {
@@ -112,7 +114,14 @@ function isPieceSacrifice(beforeFen, afterFen, uci, pv, mover) {
   const immediateNonPawn = nonPawnBefore - nonPawnBalance(c, mover);
   if (immediateDrop >= SAC_MIN && immediateNonPawn >= SAC_MIN) return true;
 
-  // Still down a piece after opponent's reply + our follow-up (2 plies).
+  // The move leaves material en prise — a genuine offer even when best play
+  // declines it (the Bxg6-then-fxg6?? pattern chess.com flags as brilliant).
+  // The engine's own PV usually walks the *sound* refutation, so this static
+  // check is what a PV walk alone can never see.
+  if (moveCreatesSacrifice(Chess, beforeFen, afterFen, uci, mover, SAC_SEE_MIN)) return true;
+
+  // Still down a piece after opponent's reply + our follow-up (2 plies) —
+  // catches deep sacs where the piece is taken a move or two later.
   const low = lowestMaterialInPv(afterFen, pv, mover, 2, VALUES);
   const lowNonPawn = lowestMaterialInPv(afterFen, pv, mover, 2, NON_PAWN);
   return low <= matBefore - SAC_MIN && lowNonPawn <= nonPawnBefore - SAC_MIN;
@@ -140,7 +149,6 @@ export function classifyMove(ctx) {
   const wAfter = winPctFor(cpAfter, mover);
   const drop = Math.max(0, wBefore - wAfter);
   const accuracy = moveAccuracy(drop);
-  const moverCp = mover === 'w' ? cpBefore : -cpBefore;
 
   const bestUci = before.best || (before.lines[0] && before.lines[0].pv[0]) || null;
   const isBest = !!(bestUci && uci === bestUci);
@@ -186,11 +194,18 @@ export function classifyMove(ctx) {
     if (swingNow || swingPrev || onlyMove) cls = 'great';
   }
 
-  // Brilliant: best piece-sac that holds/improves, not already better, not bad after.
-  if (!book && isBest
-      && wAfter >= wBefore
+  // Brilliant: a sound sacrifice the engine still rates best. Chess.com awards
+  // "!!" even when best play declines the sac, so the gates are (1) the move is
+  // engine-best (or practically so), (2) the sacrifice is sound — you're still
+  // at least equal afterwards, and (3) you weren't already winning without it:
+  // the second-best alternative isn't itself close to won. That last gate, on
+  // the runner-up rather than the played move, is what lets a sacrifice that
+  // forces mate still qualify — the played line reads as +mate, but the quiet
+  // alternative doesn't.
+  if (!book
+      && (isBest || drop < 0.5)
       && wAfter >= BRILLIANT_AFTER_MIN
-      && moverCp < BRILLIANT_CP_MAX) {
+      && wSecond < BRILLIANT_WINNING_MAX) {
     const pv = after.lines[0] ? after.lines[0].pv : [];
     if (isPieceSacrifice(before.fen, after.fen, uci, pv, mover)) {
       sacrifice = true;
