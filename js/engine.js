@@ -543,6 +543,9 @@ export class EnginePool {
     this.engines = [];
     this.free = [];
     this.queue = [];
+    this.queued = new Map();
+    this.active = new Map();
+    this.completed = new Map();
     this._dead = false;
     this._growing = false;
     // One engine first — chess.com-style. Rest spawn after readyok (no N× WASM stampede).
@@ -582,19 +585,43 @@ export class EnginePool {
   }
 
   analyse(fen, depth) {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ fen, depth, resolve, reject });
-      this._drain();
+    const key = `${depth}\n${fen}`;
+    if (this.completed.has(key)) return Promise.resolve(this.completed.get(key));
+    if (this.queued.has(key)) return this.queued.get(key).promise;
+    if (this.active.has(key)) return this.active.get(key).promise;
+    const job = { fen, depth, key };
+    job.promise = new Promise((resolve, reject) => {
+      job.resolve = resolve;
+      job.reject = reject;
     });
+    this.queue.push(job);
+    this.queued.set(key, job);
+    this._drain();
+    return job.promise;
+  }
+
+  /** Move matching queued FENs to the front; active searches continue uninterrupted. */
+  prioritize(fens) {
+    const rank = new Map(fens.map((fen, i) => [fen, i]));
+    this.queue = this.queue.map((job, index) => ({ job, index }))
+      .sort((a, b) => (rank.get(a.job.fen) ?? Infinity) - (rank.get(b.job.fen) ?? Infinity) || a.index - b.index)
+      .map(({ job }) => job);
+    this._drain();
   }
 
   _drain() {
     while (this.free.length && this.queue.length) {
       const eng = this.free.pop();
       const job = this.queue.shift();
+      this.queued.delete(job.key);
+      this.active.set(job.key, job);
       eng.analyse(job.fen, job.depth)
-        .then(job.resolve, job.reject)
+        .then(result => {
+          this.completed.set(job.key, result);
+          job.resolve(result);
+        }, error => job.reject(error))
         .finally(() => {
+          this.active.delete(job.key);
           if (!this._dead) this.free.push(eng);
           this._drain();
         });
@@ -607,5 +634,9 @@ export class EnginePool {
     this.engines = [];
     this.free = [];
     this.queue = [];
+    for (const job of this.queued.values()) job.reject(new Error('Engine pool destroyed'));
+    this.queued.clear();
+    this.active.clear();
+    this.completed.clear();
   }
 }

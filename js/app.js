@@ -9,13 +9,19 @@ import {
 } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
-  askCoach, streamCoach, buildGameOverviewPrompt, buildMovePrompt,
+  askCoach, buildGameOverviewPrompt, buildMovePrompt,
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
+import {
+  deterministicCoachFallback, parseCoachResponse, renderCoachResponse,
+  structuredCoachPrompt, validateCoachResponse,
+} from './coach-contract.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech, streamCoachSpeech, splitTtsChunks } from './tts.js';
+import { synthesizeCoachSpeech, splitTtsChunks, streamCoachSpeech } from './tts.js';
+import { consumePcmStream, PcmStreamPlayer } from './pcm-player.js';
 import { APP_VERSION } from './version.js';
+import { targetAnalysisReady, priorityPositionIndexes } from './analysis-readiness.js';
 
 const $ = id => document.getElementById(id);
 const VERSION_STORE = 'mcr-version';
@@ -48,7 +54,7 @@ const state = {
   coachTargetKey: null,
   coachSpeakId: 0,
   coachAudio: null,     // HTMLAudioElement for batch TTS fallback
-  coachAudioCtx: null,  // AudioContext for streamed PCM
+  coachPcmPlayer: null, // owns the reusable AudioContext + scheduled PCM sources
   coachTtsAbort: null,
   user: null,           // chess.com username for current games list
   games: [],            // raw games from last fetch
@@ -1243,6 +1249,7 @@ async function goto(ply, opts = {}) {
   const { animate = true, skipUrl = false, sound = true } = opts;
   const next = Math.max(0, Math.min(state.moves.length, ply));
   const prev = state.ply;
+  prioritizeCurrentPly(next);
   if (next === prev) { renderAll(); return; }
 
   stopCoachSpeech();
@@ -1367,9 +1374,9 @@ function stopCoachSpeech() {
     try { state.coachTtsAbort.abort(); } catch { /* ignore */ }
     state.coachTtsAbort = null;
   }
-  if (state.coachAudioCtx) {
-    try { state.coachAudioCtx.close(); } catch { /* ignore */ }
-    state.coachAudioCtx = null;
+  if (state.coachPcmPlayer) {
+    state.coachPcmPlayer.stop();
+    state.coachPcmPlayer = null;
   }
   if (state.coachAudio) {
     try {
@@ -1481,12 +1488,9 @@ function playCoachBlob(blob, id) {
  * short ones) are pushed in as they become available — from a live text stream
  * or a full string — and spoken strictly in order.
  *
- * Each segment is synthesized once in the good Gemini voice, with the next
- * segment prefetched while the current one plays. A segment that fails to
- * synthesize degrades to the robotic browser voice for THAT segment only; it
- * never replays an earlier segment. That is the whole point: the old design
- * restarted playback from the first sentence on any mid-note failure, which is
- * what made the note replay its opening in the bad voice and then stall.
+ * PCM is scheduled as soon as streaming yields complete samples. Batch TTS is
+ * used only when a segment's stream fails before scheduling any audio; after
+ * partial playback, an error simply ends that segment so it is never replayed.
  */
 function createCoachSpeaker() {
   stopCoachSpeech();
@@ -1494,6 +1498,13 @@ function createCoachSpeaker() {
   const ac = new AbortController();
   state.coachTtsAbort = ac;
   const signal = ac.signal;
+  const pcmPlayer = new PcmStreamPlayer({
+    onSchedule: () => {
+      markCoachTiming('firstTtsPcm');
+      markCoachTiming('firstAudibleScheduling');
+    },
+  });
+  state.coachPcmPlayer = pcmPlayer;
 
   const queue = [];
   let ended = false;
@@ -1502,49 +1513,8 @@ function createCoachSpeaker() {
   const waitNext = () => new Promise(resolve => { wake = resolve; });
   const synth = text => synthesizeCoachSpeech(text, signal);
 
-  async function playStreamed(text) {
-    const sinceClick = state.coachTiming ? performance.now() - state.coachTiming.analyzeClick : 0;
-    const firstAudio = deadline(signal, Math.max(1, FIRST_RESPONSE_MS - sinceClick), 'Coach audio');
-    const total = deadline(signal, TTS_TOTAL_MS, 'Coach audio');
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    state.coachAudioCtx = ctx;
-    await ctx.resume();
-    let nextAt = ctx.currentTime;
-    let received = false;
-    try {
-      for await (const { pcm, sampleRate } of streamCoachSpeech(text, firstAudio.signal)) {
-        if (!received) {
-          received = true;
-          markCoachTiming('firstTtsPcm');
-          firstAudio.cancel();
-        }
-        const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
-        const buffer = ctx.createBuffer(1, samples.length, sampleRate);
-        const channel = buffer.getChannelData(0);
-        for (let i = 0; i < samples.length; i++) channel[i] = samples[i] / 32768;
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        nextAt = Math.max(nextAt, ctx.currentTime + 0.02);
-        source.start(nextAt);
-        markCoachTiming('firstAudibleScheduling');
-        nextAt += buffer.duration;
-      }
-      if (received) await new Promise(resolve => setTimeout(resolve, Math.max(0, (nextAt - ctx.currentTime) * 1000)));
-      return received;
-    } catch (ex) {
-      throw total.error(firstAudio.error(ex));
-    } finally {
-      firstAudio.cancel();
-      total.cancel();
-      if (state.coachAudioCtx === ctx) state.coachAudioCtx = null;
-      try { await ctx.close(); } catch { /* already closed by cancellation */ }
-    }
-  }
 
   const loop = (async () => {
-    // prefetch = { text, promise } for the segment after the current one.
-    let prefetch = null;
     while (true) {
       if (id !== state.coachSpeakId) return;
       if (!queue.length) {
@@ -1553,24 +1523,24 @@ function createCoachSpeaker() {
         continue;
       }
       const text = queue.shift();
-      let blob = null;
-      try {
-        if (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
-          const played = await playStreamed(text);
-          if (played) continue;
-        }
-        blob = (prefetch && prefetch.text === text)
-          ? await prefetch.promise
-          : await synth(text);
-      } catch (ex) {
-        if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
-        blob = null; // good voice unavailable for this segment
-      }
+      const result = await consumePcmStream({
+        stream: streamCoachSpeech(text, signal),
+        player: pcmPlayer,
+        signal,
+        isCurrent: () => id === state.coachSpeakId,
+        fallback: async () => {
+          try { return await synth(text); } catch (ex) {
+            if (ex.name === 'AbortError') throw ex;
+            return null;
+          }
+        },
+      });
+      if (result.cancelled || id !== state.coachSpeakId) return;
+      // Once any PCM was scheduled, even a later stream error must not replay.
+      if (result.scheduled) continue;
+      const blob = result.fallback;
+
       if (id !== state.coachSpeakId) return;
-      // Start rendering the next segment while this one plays.
-      prefetch = queue.length
-        ? { text: queue[0], promise: synth(queue[0]).catch(() => null) }
-        : null;
       if (blob) {
         try {
           await playCoachBlob(blob, id);
@@ -1580,7 +1550,9 @@ function createCoachSpeaker() {
       }
     }
   })();
-  loop.finally(() => { if (state.coachTtsAbort === ac) state.coachTtsAbort = null; });
+  loop.finally(() => {
+    if (state.coachTtsAbort === ac) state.coachTtsAbort = null;
+  });
 
   return {
     id,
@@ -1652,8 +1624,16 @@ function meSide() {
   return state.flipped ? 'b' : 'w';
 }
 
-function analysisReady() {
-  return !state.running && state.reports.length && state.reports.every(Boolean);
+function analysisReady(ply = state.ply) {
+  return targetAnalysisReady(state, ply);
+}
+
+function prioritizeCurrentPly(ply = state.ply) {
+  if (!state.pool || ply < 1 || ply > state.moves.length) return;
+  state.pool.prioritize([
+    state.moves[ply - 1].fenBefore,
+    state.moves[ply - 1].fenAfter,
+  ]);
 }
 
 function coachCacheKey() {
@@ -1674,7 +1654,7 @@ function syncCoachUi() {
     stopCoachSpeech();
   }
 
-  const ready = analysisReady() && state.moves.length > 0;
+  const ready = analysisReady();
   btn.disabled = !ready || state.coachBusy || state.autoplay;
 
   if (!state.moves.length) {
@@ -1687,7 +1667,9 @@ function syncCoachUi() {
   }
   if (!analysisReady()) {
     setCoachPlaceholder(state.running
-      ? 'Engine analysing. Press Analyze when the report is ready.'
+      ? (state.ply === 0
+          ? 'Full game overview is still analysing; partial statistics are not shown as totals.'
+          : 'This move is queued. Coaching unlocks as soon as its two positions are ready.')
       : 'Finish engine analysis first, then press Analyze.');
     return;
   }
@@ -1750,29 +1732,36 @@ async function runCoachAnalyze() {
   try {
     const total = deadline(ac.signal, COACH_TOTAL_MS, 'Coach response');
     const firstText = deadline(total.signal, FIRST_RESPONSE_MS, 'Coach response');
-    let cleaned;
+    const facts = makeCoachFacts();
+    let errors = [];
+    let cleaned = null;
     try {
-      cleaned = await streamCoachToSpeech(prompt, images, firstText.signal, reqId, cacheKey, () => {
-        markCoachTiming('firstCoachDelta');
-        firstText.cancel();
-      });
+      // Nothing is rendered or spoken until the complete JSON response passes.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const signal = attempt === 0 ? firstText.signal : total.signal;
+        const text = await askCoach(structuredCoachPrompt(prompt, facts, errors), signal, images);
+        if (attempt === 0) {
+          markCoachTiming('firstCoachDelta');
+          firstText.cancel();
+        }
+        if (reqId !== state.coachReqId) return;
+        const parsed = parseCoachResponse(text);
+        const checked = parsed.value
+          ? validateCoachResponse(parsed.value, facts)
+          : { ok: false, errors: parsed.errors };
+        if (checked.ok) { cleaned = renderCoachResponse(parsed.value); break; }
+        errors = checked.errors;
+      }
     } catch (ex) {
       throw total.error(firstText.error(ex));
-    }
-    if (cleaned == null) {
-      // No streaming path available — fall back to a single non-streaming call.
-      const text = await askCoach(prompt, firstText.signal, images);
-      markCoachTiming('firstCoachDelta');
+    } finally {
       firstText.cancel();
-      if (reqId !== state.coachReqId) return;
-      cleaned = scrubCoachText(text);
-      if (!cleaned) throw new Error('Empty coach reply');
-      state.coachCache.set(cacheKey, cleaned);
-      setCoachText(cleaned);
-      speakCoach(cleaned);
+      total.cancel();
     }
-    firstText.cancel();
-    total.cancel();
+    if (!cleaned) cleaned = deterministicCoachFallback(facts);
+    state.coachCache.set(cacheKey, cleaned);
+    setCoachText(cleaned);
+    speakCoach(cleaned);
     if (reqId !== state.coachReqId) return;
     state.coachBusy = false;
     state.coachTargetKey = null;
@@ -1785,77 +1774,6 @@ async function runCoachAnalyze() {
     setCoachPlaceholder(ex.message || 'Coach request failed.', true);
     syncCoachUi();
   }
-}
-
-/**
- * Stream the coach note, rendering it live and speaking each sentence the
- * moment it completes so audio starts while the model is still writing.
- *
- * Returns the finished (scrubbed) note on success, or null when no streaming
- * path is available so the caller can fall back to a single non-streaming call.
- * Throws on a genuine mid-stream failure (after text/audio already started) —
- * restarting there would replay from the top, the very bug we're avoiding.
- */
-async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey, onFirstText = () => {}) {
-  const speaker = createCoachSpeaker();
-  let full = '';
-  let spokenUpto = 0; // chars of `full` already handed to the speaker
-  let started = false;
-
-  // Flush complete sentences from the unspoken tail into the speaker. The first
-  // segment goes as soon as one sentence lands (fast first audio); later ones
-  // accumulate a bit so prosody isn't chopped sentence-by-sentence.
-  const flush = (final) => {
-    const pending = full.slice(spokenUpto);
-    if (final) {
-      const seg = scrubCoachText(pending);
-      if (seg) speaker.push(seg);
-      spokenUpto = full.length;
-      return;
-    }
-    const re = /[.!?]["')\]]?\s/g;
-    let end = -1;
-    let m;
-    while ((m = re.exec(pending))) end = m.index + m[0].length;
-    if (end <= 0) return;
-    const minLen = spokenUpto === 0 ? 1 : 90;
-    if (end < minLen) return;
-    const seg = scrubCoachText(pending.slice(0, end));
-    if (seg) speaker.push(seg);
-    spokenUpto += end;
-  };
-
-  try {
-    for await (const delta of streamCoach(prompt, signal, images)) {
-      if (reqId !== state.coachReqId) { speaker.end(); return full ? scrubCoachText(full) : ''; }
-      started = true;
-      if (!full) onFirstText();
-      full += delta;
-      setCoachText(scrubCoachText(full)); // live render as it writes
-      flush(false);
-    }
-  } catch (ex) {
-    speaker.end();
-    if (ex.name === 'AbortError') throw ex;
-    // Already produced text? Keep what we have instead of restarting (no replay).
-    if (full.trim()) {
-      flush(true);
-      const cleaned = scrubCoachText(full);
-      state.coachCache.set(cacheKey, cleaned);
-      setCoachText(cleaned);
-      return cleaned;
-    }
-    if (started) throw ex;     // stream broke with nothing usable
-    return null;               // no streaming path — let caller fall back
-  }
-
-  flush(true);
-  speaker.end();
-  const cleaned = scrubCoachText(full);
-  if (!cleaned) throw new Error('Empty coach reply');
-  state.coachCache.set(cacheKey, cleaned);
-  setCoachText(cleaned);
-  return cleaned;
 }
 
 async function makeMoveBoardImages({ visualExplanation = false } = {}) {
@@ -1883,12 +1801,30 @@ async function makeMoveBoardImages({ visualExplanation = false } = {}) {
 
 $('btn-coach-analyze').onclick = () => runCoachAnalyze();
 
-function scrubCoachText(text) {
-  return String(text)
-    .replace(/\u2014|\u2013/g, ',')  // em/en dash -> comma
-    .replace(/\s+,/g, ',')
-    .replace(/,\s*,/g, ',')
-    .trim();
+function makeCoachFacts() {
+  const facts = { opening: state.meta?.opening || null };
+  if (state.ply === 0) return facts;
+  const idx = state.ply - 1;
+  const mv = state.moves[idx];
+  const rep = state.reports[idx];
+  const bestPv = pvToSans(mv.fenBefore, rep?.bestPv);
+  let bestMove = bestPv[0] || null;
+  if (!bestMove && rep?.isBest) bestMove = mv.san;
+  return {
+    ...facts,
+    played_move: mv.san,
+    engine_class: rep ? labelOf(rep.cls) : null,
+    eval_before: fmtCpShort(state.evals[idx]?.cpWhite),
+    eval_after: fmtCpShort(state.evals[idx + 1]?.cpWhite),
+    best_move: bestMove,
+    best_pv: bestPv,
+    reply_pv: pvToSans(mv.fenAfter, rep?.replyPv),
+    win_before: rep?.wBefore ?? null,
+    win_after: rep?.wAfter ?? null,
+    win_drop: rep?.drop ?? null,
+    fen_before: mv.fenBefore,
+    fen_after: mv.fenAfter,
+  };
 }
 
 function makeOverviewPrompt() {
@@ -2188,7 +2124,9 @@ async function runAnalysis() {
   fill.style.width = '45%';
   text.textContent = `Analysing… 0 / ${n + 1}`;
 
-  await Promise.all(positions.map(async (fen, i) => {
+  const order = priorityPositionIndexes(positions.length, state.ply);
+  await Promise.all(order.map(async i => {
+    const fen = positions[i];
     const c = new Chess(fen);
     let res;
     if (c.isGameOver()) {
@@ -2211,13 +2149,15 @@ async function runAnalysis() {
     done++;
     const frac = done / (n + 1);
     fill.style.width = Math.round(45 + frac * 55) + '%';
-    text.textContent = `Analysing… ${done} / ${n + 1} positions`;
-
     for (const idx of [i - 1, i]) {
       if (idx < 0 || idx >= n) continue;
       if (state.reports[idx] || !results[idx] || !results[idx + 1]) continue;
       state.reports[idx] = buildReport(idx, results[idx], results[idx + 1]);
     }
+    text.textContent = analysisReady(state.ply) && state.ply > 0
+      ? `Selected move ready · Full review still analysing… ${done} / ${n + 1} positions`
+      : `Analysing… ${done} / ${n + 1} positions`;
+    syncCoachUi();
     if (done % 3 === 0 || done === n + 1) {
       renderMoves(); renderGraph(); renderReport(); renderEvalBar(); renderDetail();
     }
