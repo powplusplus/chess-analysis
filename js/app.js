@@ -837,11 +837,12 @@ function animatePlyChange(fromPly, toPly) {
   const a = sqCenter(from), b = sqCenter(to);
   if (!a.size) return Promise.resolve();
 
-  // Paint pre-move FEN so a captured piece stays until the flyer lands.
-  // Only hide the mover on its origin square.
+  // Animate from the position currently on screen. Going backward therefore
+  // keeps the after-position (including a missing captured piece) until the
+  // flyer lands; the final render at toPly restores the before-position.
   const savedPly = state.ply;
-  state.ply = Math.min(fromPly, toPly);
-  renderBoard({ skipPiecesOn: [mv.from] });
+  state.ply = fromPly;
+  renderBoard({ skipPiecesOn: [from] });
   state.ply = savedPly;
 
   const flyer = document.createElement('div');
