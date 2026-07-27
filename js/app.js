@@ -14,7 +14,8 @@ import {
 } from './coach.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
+import { synthesizeCoachSpeech, splitTtsChunks, streamCoachSpeech } from './tts.js';
+import { consumePcmStream, PcmStreamPlayer } from './pcm-player.js';
 import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
@@ -45,7 +46,7 @@ const state = {
   coachTargetKey: null,
   coachSpeakId: 0,
   coachAudio: null,     // HTMLAudioElement for batch TTS fallback
-  coachAudioCtx: null,  // AudioContext for streamed PCM
+  coachPcmPlayer: null, // owns the reusable AudioContext + scheduled PCM sources
   coachTtsAbort: null,
   user: null,           // chess.com username for current games list
   games: [],            // raw games from last fetch
@@ -1360,9 +1361,9 @@ function stopCoachSpeech() {
     try { state.coachTtsAbort.abort(); } catch { /* ignore */ }
     state.coachTtsAbort = null;
   }
-  if (state.coachAudioCtx) {
-    try { state.coachAudioCtx.close(); } catch { /* ignore */ }
-    state.coachAudioCtx = null;
+  if (state.coachPcmPlayer) {
+    state.coachPcmPlayer.stop();
+    state.coachPcmPlayer = null;
   }
   if (state.coachAudio) {
     try {
@@ -1439,12 +1440,9 @@ function playCoachBlob(blob, id) {
  * short ones) are pushed in as they become available — from a live text stream
  * or a full string — and spoken strictly in order.
  *
- * Each segment is synthesized once in the good Gemini voice, with the next
- * segment prefetched while the current one plays. A segment that fails to
- * synthesize degrades to the robotic browser voice for THAT segment only; it
- * never replays an earlier segment. That is the whole point: the old design
- * restarted playback from the first sentence on any mid-note failure, which is
- * what made the note replay its opening in the bad voice and then stall.
+ * PCM is scheduled as soon as streaming yields complete samples. Batch TTS is
+ * used only when a segment's stream fails before scheduling any audio; after
+ * partial playback, an error simply ends that segment so it is never replayed.
  */
 function createCoachSpeaker() {
   stopCoachSpeech();
@@ -1452,6 +1450,8 @@ function createCoachSpeaker() {
   const ac = new AbortController();
   state.coachTtsAbort = ac;
   const signal = ac.signal;
+  const pcmPlayer = new PcmStreamPlayer();
+  state.coachPcmPlayer = pcmPlayer;
 
   const queue = [];
   let ended = false;
@@ -1461,8 +1461,6 @@ function createCoachSpeaker() {
   const synth = text => synthesizeCoachSpeech(text, signal);
 
   const loop = (async () => {
-    // prefetch = { text, promise } for the segment after the current one.
-    let prefetch = null;
     while (true) {
       if (id !== state.coachSpeakId) return;
       if (!queue.length) {
@@ -1471,20 +1469,23 @@ function createCoachSpeaker() {
         continue;
       }
       const text = queue.shift();
-      let blob = null;
-      try {
-        blob = (prefetch && prefetch.text === text)
-          ? await prefetch.promise
-          : await synth(text);
-      } catch (ex) {
-        if (ex.name === 'AbortError' || id !== state.coachSpeakId) return;
-        blob = null; // good voice unavailable for this segment
-      }
+      const result = await consumePcmStream({
+        stream: streamCoachSpeech(text, signal),
+        player: pcmPlayer,
+        signal,
+        isCurrent: () => id === state.coachSpeakId,
+        fallback: async () => {
+          try { return await synth(text); } catch (ex) {
+            if (ex.name === 'AbortError') throw ex;
+            return null;
+          }
+        },
+      });
+      if (result.cancelled || id !== state.coachSpeakId) return;
+      // Once any PCM was scheduled, even a later stream error must not replay.
+      if (result.scheduled) continue;
+      const blob = result.fallback;
       if (id !== state.coachSpeakId) return;
-      // Start rendering the next segment while this one plays.
-      prefetch = queue.length
-        ? { text: queue[0], promise: synth(queue[0]).catch(() => null) }
-        : null;
       if (blob) {
         try {
           await playCoachBlob(blob, id);
@@ -1494,7 +1495,9 @@ function createCoachSpeaker() {
       }
     }
   })();
-  loop.finally(() => { if (state.coachTtsAbort === ac) state.coachTtsAbort = null; });
+  loop.finally(() => {
+    if (state.coachTtsAbort === ac) state.coachTtsAbort = null;
+  });
 
   return {
     id,
