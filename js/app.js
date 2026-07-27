@@ -9,9 +9,13 @@ import {
 } from './chesscom.js';
 import { pieceSvg } from './pieces.js';
 import {
-  askCoach, streamCoach, buildGameOverviewPrompt, buildMovePrompt,
+  askCoach, buildGameOverviewPrompt, buildMovePrompt,
   summariseTallies, criticalMoments, moveLine, fmtCpShort,
 } from './coach.js';
+import {
+  deterministicCoachFallback, parseCoachResponse, renderCoachResponse,
+  structuredCoachPrompt, validateCoachResponse,
+} from './coach-contract.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
 import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
@@ -1659,17 +1663,22 @@ async function runCoachAnalyze() {
   }
 
   try {
-    let cleaned = await streamCoachToSpeech(prompt, images, ac.signal, reqId, cacheKey);
-    if (cleaned == null) {
-      // No streaming path available — fall back to a single non-streaming call.
-      const text = await askCoach(prompt, ac.signal, images);
+    const facts = makeCoachFacts();
+    let errors = [];
+    let cleaned = null;
+    // Nothing is rendered or spoken until the complete JSON response passes.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const text = await askCoach(structuredCoachPrompt(prompt, facts, errors), ac.signal, images);
       if (reqId !== state.coachReqId) return;
-      cleaned = scrubCoachText(text);
-      if (!cleaned) throw new Error('Empty coach reply');
-      state.coachCache.set(cacheKey, cleaned);
-      setCoachText(cleaned);
-      speakCoach(cleaned);
+      const parsed = parseCoachResponse(text);
+      const checked = parsed.value ? validateCoachResponse(parsed.value, facts) : { ok: false, errors: parsed.errors };
+      if (checked.ok) { cleaned = renderCoachResponse(parsed.value); break; }
+      errors = checked.errors;
     }
+    if (!cleaned) cleaned = deterministicCoachFallback(facts);
+    state.coachCache.set(cacheKey, cleaned);
+    setCoachText(cleaned);
+    speakCoach(cleaned);
     if (reqId !== state.coachReqId) return;
     state.coachBusy = false;
     state.coachTargetKey = null;
@@ -1682,76 +1691,6 @@ async function runCoachAnalyze() {
     setCoachPlaceholder(ex.message || 'Coach request failed.', true);
     syncCoachUi();
   }
-}
-
-/**
- * Stream the coach note, rendering it live and speaking each sentence the
- * moment it completes so audio starts while the model is still writing.
- *
- * Returns the finished (scrubbed) note on success, or null when no streaming
- * path is available so the caller can fall back to a single non-streaming call.
- * Throws on a genuine mid-stream failure (after text/audio already started) —
- * restarting there would replay from the top, the very bug we're avoiding.
- */
-async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
-  const speaker = createCoachSpeaker();
-  let full = '';
-  let spokenUpto = 0; // chars of `full` already handed to the speaker
-  let started = false;
-
-  // Flush complete sentences from the unspoken tail into the speaker. The first
-  // segment goes as soon as one sentence lands (fast first audio); later ones
-  // accumulate a bit so prosody isn't chopped sentence-by-sentence.
-  const flush = (final) => {
-    const pending = full.slice(spokenUpto);
-    if (final) {
-      const seg = scrubCoachText(pending);
-      if (seg) speaker.push(seg);
-      spokenUpto = full.length;
-      return;
-    }
-    const re = /[.!?]["')\]]?\s/g;
-    let end = -1;
-    let m;
-    while ((m = re.exec(pending))) end = m.index + m[0].length;
-    if (end <= 0) return;
-    const minLen = spokenUpto === 0 ? 1 : 90;
-    if (end < minLen) return;
-    const seg = scrubCoachText(pending.slice(0, end));
-    if (seg) speaker.push(seg);
-    spokenUpto += end;
-  };
-
-  try {
-    for await (const delta of streamCoach(prompt, signal, images)) {
-      if (reqId !== state.coachReqId) { speaker.end(); return full ? scrubCoachText(full) : ''; }
-      started = true;
-      full += delta;
-      setCoachText(scrubCoachText(full)); // live render as it writes
-      flush(false);
-    }
-  } catch (ex) {
-    speaker.end();
-    if (ex.name === 'AbortError') throw ex;
-    // Already produced text? Keep what we have instead of restarting (no replay).
-    if (full.trim()) {
-      flush(true);
-      const cleaned = scrubCoachText(full);
-      state.coachCache.set(cacheKey, cleaned);
-      setCoachText(cleaned);
-      return cleaned;
-    }
-    if (started) throw ex;     // stream broke with nothing usable
-    return null;               // no streaming path — let caller fall back
-  }
-
-  flush(true);
-  speaker.end();
-  const cleaned = scrubCoachText(full);
-  if (!cleaned) throw new Error('Empty coach reply');
-  state.coachCache.set(cacheKey, cleaned);
-  setCoachText(cleaned);
-  return cleaned;
 }
 
 async function makeMoveBoardImages() {
@@ -1776,12 +1715,30 @@ async function makeMoveBoardImages() {
 
 $('btn-coach-analyze').onclick = () => runCoachAnalyze();
 
-function scrubCoachText(text) {
-  return String(text)
-    .replace(/\u2014|\u2013/g, ',')  // em/en dash -> comma
-    .replace(/\s+,/g, ',')
-    .replace(/,\s*,/g, ',')
-    .trim();
+function makeCoachFacts() {
+  const facts = { opening: state.meta?.opening || null };
+  if (state.ply === 0) return facts;
+  const idx = state.ply - 1;
+  const mv = state.moves[idx];
+  const rep = state.reports[idx];
+  const bestPv = pvToSans(mv.fenBefore, rep?.bestPv);
+  let bestMove = bestPv[0] || null;
+  if (!bestMove && rep?.isBest) bestMove = mv.san;
+  return {
+    ...facts,
+    played_move: mv.san,
+    engine_class: rep ? labelOf(rep.cls) : null,
+    eval_before: fmtCpShort(state.evals[idx]?.cpWhite),
+    eval_after: fmtCpShort(state.evals[idx + 1]?.cpWhite),
+    best_move: bestMove,
+    best_pv: bestPv,
+    reply_pv: pvToSans(mv.fenAfter, rep?.replyPv),
+    win_before: rep?.wBefore ?? null,
+    win_after: rep?.wAfter ?? null,
+    win_drop: rep?.drop ?? null,
+    fen_before: mv.fenBefore,
+    fen_after: mv.fenAfter,
+  };
 }
 
 function makeOverviewPrompt() {
