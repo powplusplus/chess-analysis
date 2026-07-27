@@ -75,7 +75,7 @@ export default async function handler(req, res) {
           contents: [{ role: 'user', parts }],
           generationConfig: {
             temperature: 0.25,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 400,
             thinkingConfig: { thinkingLevel: level },
           },
         }),

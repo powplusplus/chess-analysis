@@ -14,13 +14,16 @@ import {
 } from './coach.js';
 import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
-import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
+import { synthesizeCoachSpeech, streamCoachSpeech, splitTtsChunks } from './tts.js';
 import { APP_VERSION } from './version.js';
 
 const $ = id => document.getElementById(id);
 const VERSION_STORE = 'mcr-version';
 const FILES = 'abcdefgh';
 const ANIM_MS = 160;
+const FIRST_RESPONSE_MS = 10_000;
+const COACH_TOTAL_MS = 30_000;
+const TTS_TOTAL_MS = 30_000;
 
 const state = {
   chess: null,
@@ -65,6 +68,9 @@ const state = {
   livePollGen: 0,       // bump to cancel in-flight polls
   liveFinished: false,  // ongoing game has ended
   liveUpdating: false,  // an incremental analysis pass is running
+  coachTiming: null,
+  engineStartedAt: null,
+  engineDurationMs: null,
 };
 
 // Chess.com highlights: primary rows always visible; rest behind "Show more"
@@ -1377,6 +1383,41 @@ function stopCoachSpeech() {
   } catch { /* ignore */ }
 }
 
+function markCoachTiming(name) {
+  const timing = state.coachTiming;
+  if (!timing || timing[name] != null) return;
+  timing[name] = performance.now();
+  const elapsed = timing[name] - timing.analyzeClick;
+  console.info(`[coach timing] ${name}: ${elapsed.toFixed(0)}ms`, {
+    engineAnalysisMs: state.engineDurationMs,
+  });
+}
+
+function timeoutError(stage) {
+  const error = new Error(`${stage} timed out. Please try again.`);
+  error.name = 'TimeoutError';
+  return error;
+}
+
+function deadline(parentSignal, ms, stage) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal) {
+    if (parentSignal.aborted) abort();
+    else parentSignal.addEventListener('abort', abort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(timeoutError(stage));
+  }, ms);
+  return {
+    signal: controller.signal,
+    cancel() { clearTimeout(timer); parentSignal?.removeEventListener('abort', abort); },
+    error(ex) { return timedOut ? timeoutError(stage) : ex; },
+  };
+}
+
 // Last-ditch robotic voice. Only ever used for a single segment whose Gemini
 // synthesis failed — never to replay a segment already spoken. Resolves when
 // the utterance ends so the queue stays ordered.
@@ -1460,6 +1501,46 @@ function createCoachSpeaker() {
   const waitNext = () => new Promise(resolve => { wake = resolve; });
   const synth = text => synthesizeCoachSpeech(text, signal);
 
+  async function playStreamed(text) {
+    const sinceClick = state.coachTiming ? performance.now() - state.coachTiming.analyzeClick : 0;
+    const firstAudio = deadline(signal, Math.max(1, FIRST_RESPONSE_MS - sinceClick), 'Coach audio');
+    const total = deadline(signal, TTS_TOTAL_MS, 'Coach audio');
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    state.coachAudioCtx = ctx;
+    await ctx.resume();
+    let nextAt = ctx.currentTime;
+    let received = false;
+    try {
+      for await (const { pcm, sampleRate } of streamCoachSpeech(text, firstAudio.signal)) {
+        if (!received) {
+          received = true;
+          markCoachTiming('firstTtsPcm');
+          firstAudio.cancel();
+        }
+        const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
+        const buffer = ctx.createBuffer(1, samples.length, sampleRate);
+        const channel = buffer.getChannelData(0);
+        for (let i = 0; i < samples.length; i++) channel[i] = samples[i] / 32768;
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        nextAt = Math.max(nextAt, ctx.currentTime + 0.02);
+        source.start(nextAt);
+        markCoachTiming('firstAudibleScheduling');
+        nextAt += buffer.duration;
+      }
+      if (received) await new Promise(resolve => setTimeout(resolve, Math.max(0, (nextAt - ctx.currentTime) * 1000)));
+      return received;
+    } catch (ex) {
+      throw total.error(firstAudio.error(ex));
+    } finally {
+      firstAudio.cancel();
+      total.cancel();
+      if (state.coachAudioCtx === ctx) state.coachAudioCtx = null;
+      try { await ctx.close(); } catch { /* already closed by cancellation */ }
+    }
+  }
+
   const loop = (async () => {
     // prefetch = { text, promise } for the segment after the current one.
     let prefetch = null;
@@ -1473,6 +1554,10 @@ function createCoachSpeaker() {
       const text = queue.shift();
       let blob = null;
       try {
+        if (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
+          const played = await playStreamed(text);
+          if (played) continue;
+        }
         blob = (prefetch && prefetch.text === text)
           ? await prefetch.promise
           : await synth(text);
@@ -1630,6 +1715,8 @@ async function runCoachAnalyze() {
   }
 
   if (state.coachAbort) state.coachAbort.abort();
+  state.coachTiming = { analyzeClick: performance.now() };
+  console.info('[coach timing] Analyze click', { engineAnalysisMs: state.engineDurationMs });
   stopCoachSpeech();
   const ac = new AbortController();
   state.coachAbort = ac;
@@ -1646,9 +1733,10 @@ async function runCoachAnalyze() {
       prompt = makeOverviewPrompt();
       images = undefined;
     } else {
-      const boards = await makeMoveBoardImages();
-      images = boards.images;
-      prompt = makeMovePrompt({ hasBoardImages: !!images?.length });
+      // FEN, eval, classification, best move and PV already ground this request.
+      // PNG rendering is deliberately excluded from the default latency path.
+      images = undefined;
+      prompt = makeMovePrompt({ hasBoardImages: false });
     }
   } catch (ex) {
     state.coachBusy = false;
@@ -1659,10 +1747,22 @@ async function runCoachAnalyze() {
   }
 
   try {
-    let cleaned = await streamCoachToSpeech(prompt, images, ac.signal, reqId, cacheKey);
+    const total = deadline(ac.signal, COACH_TOTAL_MS, 'Coach response');
+    const firstText = deadline(total.signal, FIRST_RESPONSE_MS, 'Coach response');
+    let cleaned;
+    try {
+      cleaned = await streamCoachToSpeech(prompt, images, firstText.signal, reqId, cacheKey, () => {
+        markCoachTiming('firstCoachDelta');
+        firstText.cancel();
+      });
+    } catch (ex) {
+      throw total.error(firstText.error(ex));
+    }
     if (cleaned == null) {
       // No streaming path available — fall back to a single non-streaming call.
-      const text = await askCoach(prompt, ac.signal, images);
+      const text = await askCoach(prompt, firstText.signal, images);
+      markCoachTiming('firstCoachDelta');
+      firstText.cancel();
       if (reqId !== state.coachReqId) return;
       cleaned = scrubCoachText(text);
       if (!cleaned) throw new Error('Empty coach reply');
@@ -1670,6 +1770,8 @@ async function runCoachAnalyze() {
       setCoachText(cleaned);
       speakCoach(cleaned);
     }
+    firstText.cancel();
+    total.cancel();
     if (reqId !== state.coachReqId) return;
     state.coachBusy = false;
     state.coachTargetKey = null;
@@ -1693,7 +1795,7 @@ async function runCoachAnalyze() {
  * Throws on a genuine mid-stream failure (after text/audio already started) —
  * restarting there would replay from the top, the very bug we're avoiding.
  */
-async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
+async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey, onFirstText = () => {}) {
   const speaker = createCoachSpeaker();
   let full = '';
   let spokenUpto = 0; // chars of `full` already handed to the speaker
@@ -1726,6 +1828,7 @@ async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
     for await (const delta of streamCoach(prompt, signal, images)) {
       if (reqId !== state.coachReqId) { speaker.end(); return full ? scrubCoachText(full) : ''; }
       started = true;
+      if (!full) onFirstText();
       full += delta;
       setCoachText(scrubCoachText(full)); // live render as it writes
       flush(false);
@@ -1754,7 +1857,10 @@ async function streamCoachToSpeech(prompt, images, signal, reqId, cacheKey) {
   return cleaned;
 }
 
-async function makeMoveBoardImages() {
+async function makeMoveBoardImages({ visualExplanation = false } = {}) {
+  // Rendering and uploading PNGs is opt-in. The normal spoken explanation is
+  // fully grounded by FEN plus engine facts and must not wait for canvas work.
+  if (!visualExplanation) return { images: undefined };
   const idx = state.ply - 1;
   const mv = state.moves[idx];
   if (!mv) return { images: undefined };
@@ -2012,6 +2118,8 @@ async function runAnalysis() {
   state.results = new Array(n + 1).fill(null);
   state.tallyCursor = {};
   state.running = true;
+  state.engineStartedAt = performance.now();
+  state.engineDurationMs = null;
 
   const prog = $('progress'), fill = $('progress-fill'), text = $('progress-text');
   prog.hidden = false;
@@ -2121,6 +2229,8 @@ async function runAnalysis() {
     }
   }
   state.running = false;
+  state.engineDurationMs = performance.now() - state.engineStartedAt;
+  console.info(`[engine timing] analysis: ${state.engineDurationMs.toFixed(0)}ms`);
   prog.hidden = true;
   renderAll();
   renderLiveStatus();
