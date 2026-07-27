@@ -16,6 +16,7 @@ import { fenToPngBase64, prefetchPieces } from './board-image.js';
 import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
 import { synthesizeCoachSpeech, splitTtsChunks } from './tts.js';
 import { APP_VERSION } from './version.js';
+import { targetAnalysisReady, priorityPositionIndexes } from './analysis-readiness.js';
 
 const $ = id => document.getElementById(id);
 const VERSION_STORE = 'mcr-version';
@@ -1236,6 +1237,7 @@ async function goto(ply, opts = {}) {
   const { animate = true, skipUrl = false, sound = true } = opts;
   const next = Math.max(0, Math.min(state.moves.length, ply));
   const prev = state.ply;
+  prioritizeCurrentPly(next);
   if (next === prev) { renderAll(); return; }
 
   stopCoachSpeech();
@@ -1566,8 +1568,16 @@ function meSide() {
   return state.flipped ? 'b' : 'w';
 }
 
-function analysisReady() {
-  return !state.running && state.reports.length && state.reports.every(Boolean);
+function analysisReady(ply = state.ply) {
+  return targetAnalysisReady(state, ply);
+}
+
+function prioritizeCurrentPly(ply = state.ply) {
+  if (!state.pool || ply < 1 || ply > state.moves.length) return;
+  state.pool.prioritize([
+    state.moves[ply - 1].fenBefore,
+    state.moves[ply - 1].fenAfter,
+  ]);
 }
 
 function coachCacheKey() {
@@ -1588,7 +1598,7 @@ function syncCoachUi() {
     stopCoachSpeech();
   }
 
-  const ready = analysisReady() && state.moves.length > 0;
+  const ready = analysisReady();
   btn.disabled = !ready || state.coachBusy || state.autoplay;
 
   if (!state.moves.length) {
@@ -1601,7 +1611,9 @@ function syncCoachUi() {
   }
   if (!analysisReady()) {
     setCoachPlaceholder(state.running
-      ? 'Engine analysing. Press Analyze when the report is ready.'
+      ? (state.ply === 0
+          ? 'Full game overview is still analysing; partial statistics are not shown as totals.'
+          : 'This move is queued. Coaching unlocks as soon as its two positions are ready.')
       : 'Finish engine analysis first, then press Analyze.');
     return;
   }
@@ -2079,7 +2091,9 @@ async function runAnalysis() {
   fill.style.width = '45%';
   text.textContent = `Analysing… 0 / ${n + 1}`;
 
-  await Promise.all(positions.map(async (fen, i) => {
+  const order = priorityPositionIndexes(positions.length, state.ply);
+  await Promise.all(order.map(async i => {
+    const fen = positions[i];
     const c = new Chess(fen);
     let res;
     if (c.isGameOver()) {
@@ -2102,13 +2116,15 @@ async function runAnalysis() {
     done++;
     const frac = done / (n + 1);
     fill.style.width = Math.round(45 + frac * 55) + '%';
-    text.textContent = `Analysing… ${done} / ${n + 1} positions`;
-
     for (const idx of [i - 1, i]) {
       if (idx < 0 || idx >= n) continue;
       if (state.reports[idx] || !results[idx] || !results[idx + 1]) continue;
       state.reports[idx] = buildReport(idx, results[idx], results[idx + 1]);
     }
+    text.textContent = analysisReady(state.ply) && state.ply > 0
+      ? `Selected move ready · Full review still analysing… ${done} / ${n + 1} positions`
+      : `Analysing… ${done} / ${n + 1} positions`;
+    syncCoachUi();
     if (done % 3 === 0 || done === n + 1) {
       renderMoves(); renderGraph(); renderReport(); renderEvalBar(); renderDetail();
     }
