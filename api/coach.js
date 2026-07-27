@@ -77,7 +77,7 @@ async function generateWithFallback(key, parts) {
         contents: [{ role: 'user', parts }],
         generationConfig: {
           temperature: 0.25,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 400,
           thinkingConfig: { thinkingLevel: level },
         },
       }),

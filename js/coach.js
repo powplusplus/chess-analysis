@@ -23,6 +23,7 @@ Voice rules (strict):
 - Never use "it's not X, it's Y" / "this isn't X, it's Y" / "not about X, about Y". Say the point once, straight.
 - Short paragraphs. Direct. No fluff. No emoji. No markdown headings.
 - 2 to 4 short paragraphs max.
+- The first sentence must state the principal evaluation and the main lesson. Do not open with scene-setting.
 - Sound like a real coach talking to the player, not a textbook.
 - Never only restate the move or its label (Best, Blunder, etc). Explain the idea, the plan, and what to do next.
 
@@ -207,7 +208,7 @@ function buildParts(prompt, images) {
 function genConfig(thinkingLevel) {
   return {
     temperature: 0.25,
-    maxOutputTokens: 8192,
+    maxOutputTokens: 400,
     thinkingConfig: { thinkingLevel },
   };
 }
