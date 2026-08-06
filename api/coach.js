@@ -14,9 +14,13 @@ const MAX_OUTPUT_TOKENS = 1024;
 // Gemma is frequently overloaded for a second or two. Retry those, and only
 // those: a 400 is our bug and repeating it just burns the request budget.
 const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
-const RETRY_DELAYS_MS = [400, 900];
-// Stay clear of the function timeout; the browser is holding a deadline too.
-const RETRY_BUDGET_MS = 7000;
+const RETRY_DELAYS_MS = [350];
+// The browser gives up on the first response after 10s. Retrying past that is
+// worse than not retrying: the work completes, logs a 200, and arrives to a
+// caller that stopped listening. Every bound below keeps the whole handler
+// comfortably inside that window.
+const PER_ATTEMPT_MS = 4500;
+const RETRY_BUDGET_MS = 8000;
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -55,8 +59,9 @@ export default async function handler(req, res) {
     if (status !== 200) {
       // Overload survived the retries. Say what to do rather than forwarding
       // Google's wording, which reads like the app is broken.
-      if (status === 429 || status === 503) {
-        return res.status(status).json({ error: 'The coach model is busy. Press Analyze again in a moment.' });
+      if (status === 429 || status === 503 || status === 504) {
+        return res.status(status === 504 ? 503 : status)
+          .json({ error: 'The coach model is busy. Press Analyze again in a moment.' });
       }
       const msg = data?.error?.message || `Gemini error ${status}`;
       return res.status(status).json({ error: msg });
@@ -92,20 +97,32 @@ function isThinkingLevelError(msg) {
 }
 
 async function generateOnce(key, parts, level) {
-  const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: {
-        temperature: 0.25,
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        thinkingConfig: { thinkingLevel: level },
-      },
-    }),
-  });
-  const data = await r.json().catch(() => ({}));
-  return { data, status: r.status, ok: r.ok };
+  try {
+    const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          temperature: 0.25,
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          thinkingConfig: { thinkingLevel: level },
+        },
+      }),
+      signal: AbortSignal.timeout(PER_ATTEMPT_MS),
+    });
+    const data = await r.json().catch(() => ({}));
+    return { data, status: r.status, ok: r.ok };
+  } catch (ex) {
+    // A hung upstream call is the same problem as a refused one, and must not
+    // be allowed to consume the caller's whole deadline.
+    const timedOut = ex.name === 'TimeoutError' || ex.name === 'AbortError';
+    return {
+      data: { error: { message: timedOut ? `Upstream call exceeded ${PER_ATTEMPT_MS}ms` : (ex.message || 'fetch failed') } },
+      status: 504,
+      ok: false,
+    };
+  }
 }
 
 async function generateWithFallback(key, parts) {
@@ -121,12 +138,13 @@ async function generateWithFallback(key, parts) {
       // is otherwise invisible: the browser sees a bare status and the function
       // log shows only that it ran.
       console.error(`[coach] upstream ${status} thinkingLevel=${level}: ${msg || '(no message)'}`);
-      // This model is often briefly overloaded. One short backoff usually
-      // clears it, and dropping the whole request instead wastes the engine
-      // analysis the user already waited for.
+      // Retry only if the retry itself could still finish in time. Budgeting
+      // for the delay alone was the bug: the call after it ran long, the
+      // handler returned 200 past the browser's deadline, and the caller had
+      // already given up on a response it never read.
       const delay = RETRY_DELAYS_MS[attempt];
-      if (TRANSIENT_STATUS.has(status) && delay != null
-        && Date.now() - startedAt + delay < RETRY_BUDGET_MS) {
+      const finishesBy = Date.now() - startedAt + delay + PER_ATTEMPT_MS;
+      if (TRANSIENT_STATUS.has(status) && delay != null && finishesBy <= RETRY_BUDGET_MS) {
         await sleep(delay);
         continue;
       }
