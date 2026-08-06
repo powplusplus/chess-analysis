@@ -4,9 +4,11 @@ const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 1_000_000; // ~1MB raw base64 decode budget per image
-// LOW thinking is plenty for a grounded note and much faster than HIGH;
-// HIGH is the fallback if a build rejects LOW.
-const THINK_LEVELS = ['LOW', 'HIGH'];
+// Gemma 4 accepts only MINIMAL or HIGH; LOW is a 400. MINIMAL is also the only
+// setting that emits no thought tokens, and thought tokens are drawn from
+// maxOutputTokens, so HIGH can starve the reply of room. HIGH stays as the
+// fallback for a build that rejects MINIMAL.
+const THINK_LEVELS = ['MINIMAL', 'HIGH'];
 // A grounded note plus its JSON envelope needs more room than a bare template
 // list, and thinking tokens are drawn from the same budget. Still compact:
 // enough for 2 to 3 short paragraphs, not an essay.
@@ -271,6 +273,7 @@ async function callGemini(key, prompt, signal, images) {
     });
     const data = await r.json();
     if (r.ok) {
+      if (truncated(data)) throw new Error(truncationMessage(data));
       const text = extractText(data);
       if (!text) throw new Error('Empty coach reply');
       return text;
@@ -280,6 +283,22 @@ async function callGemini(key, prompt, signal, images) {
     if (!isThinkingLevelError(msg)) throw lastErr;
   }
   throw lastErr || new Error('Gemini request failed');
+}
+
+/**
+ * A reply cut off at the token cap arrives as valid HTTP but invalid JSON, so
+ * without this it is indistinguishable from the model ignoring the contract.
+ * Thought tokens are drawn from the same budget, which is what makes a high
+ * thinking level dangerous here.
+ */
+function truncated(data) {
+  return data?.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+}
+
+function truncationMessage(data) {
+  const thoughts = data?.usageMetadata?.thoughtsTokenCount;
+  const spent = thoughts ? ` after spending ${thoughts} on thinking` : '';
+  return `Coach reply hit the ${MAX_OUTPUT_TOKENS} token cap${spent}.`;
 }
 
 function extractText(data) {

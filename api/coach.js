@@ -2,9 +2,11 @@ const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 1_000_000;
-// LOW thinking is plenty for a grounded note and much faster than HIGH;
-// HIGH is the fallback if a build rejects LOW.
-const THINK_LEVELS = ['LOW', 'HIGH'];
+// Gemma 4 accepts only MINIMAL or HIGH; LOW is a 400. MINIMAL is also the only
+// setting that emits no thought tokens, and thought tokens are drawn from
+// maxOutputTokens, so HIGH can starve the reply of room. HIGH stays as the
+// fallback for a build that rejects MINIMAL.
+const THINK_LEVELS = ['MINIMAL', 'HIGH'];
 // A grounded note plus its JSON envelope needs more room than a bare template
 // list, and thinking tokens are drawn from the same budget. Still compact:
 // enough for 2 to 3 short paragraphs, not an essay.
@@ -48,6 +50,7 @@ export default async function handler(req, res) {
       const msg = data?.error?.message || `Gemini error ${status}`;
       return res.status(status).json({ error: msg });
     }
+    if (truncated(data)) return res.status(502).json({ error: truncationMessage(data) });
     const text = extractText(data);
     if (!text) return res.status(502).json({ error: 'Empty coach reply' });
     return res.status(200).json({ text });
@@ -95,6 +98,19 @@ async function generateWithFallback(key, parts) {
     }
   }
   return last || { data: { error: { message: 'Gemini request failed' } }, status: 502 };
+}
+
+// A reply cut off at the token cap is valid HTTP but invalid JSON downstream.
+// Thought tokens come out of the same budget, so a high thinking level can
+// starve the answer. Name the cause rather than letting the parser guess.
+function truncated(data) {
+  return data?.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+}
+
+function truncationMessage(data) {
+  const thoughts = data?.usageMetadata?.thoughtsTokenCount;
+  const spent = thoughts ? ` after spending ${thoughts} on thinking` : '';
+  return `Coach reply hit the ${MAX_OUTPUT_TOKENS} token cap${spent}.`;
 }
 
 function extractText(data) {
