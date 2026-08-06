@@ -13,6 +13,12 @@ const THINK_LEVELS = ['MINIMAL', 'HIGH'];
 // list, and thinking tokens are drawn from the same budget. Still compact:
 // enough for 2 to 3 short paragraphs, not an essay.
 const MAX_OUTPUT_TOKENS = 1024;
+// Gemma is frequently overloaded for a second or two. Retry those, and only
+// those: a 400 is our bug and repeating it just burns the request budget.
+const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [400, 900];
+// Leave room inside the caller's first-response deadline.
+const RETRY_BUDGET_MS = 7000;
 
 async function loadApiKey() {
   try {
@@ -220,7 +226,7 @@ function genConfig(thinkingLevel) {
 }
 
 function isThinkingLevelError(msg) {
-  return /thinking[_ ]?level|invalid.*(MAX|LOW|HIGH)|unsupported.*thinking/i.test(msg || '');
+  return /thinking[_ ]?level|invalid.*(MINIMAL|MAX|LOW|HIGH)|unsupported.*thinking/i.test(msg || '');
 }
 
 export async function askCoach(prompt, signal, images) {
@@ -258,29 +264,47 @@ export async function askCoach(prompt, signal, images) {
   return callGemini(key, prompt, signal, imgs);
 }
 
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  const timer = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+});
+
 async function callGemini(key, prompt, signal, images) {
   const parts = buildParts(prompt, images);
+  const startedAt = Date.now();
   let lastErr = null;
   for (const level of THINK_LEVELS) {
-    const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts }],
-        generationConfig: genConfig(level),
-      }),
-      signal,
-    });
-    const data = await r.json();
-    if (r.ok) {
-      if (truncated(data)) throw new Error(truncationMessage(data));
-      const text = extractText(data);
-      if (!text) throw new Error('Empty coach reply');
-      return text;
+    for (let attempt = 0; ; attempt++) {
+      const r = await fetch(`${ENDPOINT}?key=${encodeURIComponent(key)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: genConfig(level),
+        }),
+        signal,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) {
+        if (truncated(data)) throw new Error(truncationMessage(data));
+        const text = extractText(data);
+        if (!text) throw new Error('Empty coach reply');
+        return text;
+      }
+      const msg = data?.error?.message || `Gemini error ${r.status}`;
+      lastErr = new Error(r.status === 429 || r.status === 503
+        ? 'The coach model is busy. Press Analyze again in a moment.'
+        : msg);
+      // Same brief-overload retry as the proxy, so local dev fails the same way.
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (TRANSIENT_STATUS.has(r.status) && delay != null
+        && Date.now() - startedAt + delay < RETRY_BUDGET_MS) {
+        await sleep(delay, signal);
+        continue;
+      }
+      if (isThinkingLevelError(msg)) break;
+      throw lastErr;
     }
-    const msg = data?.error?.message || `Gemini error ${r.status}`;
-    lastErr = new Error(msg);
-    if (!isThinkingLevelError(msg)) throw lastErr;
   }
   throw lastErr || new Error('Gemini request failed');
 }
