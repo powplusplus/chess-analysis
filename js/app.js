@@ -21,6 +21,7 @@ import { playMoveSound, stopAllMoveSounds, prefetchSounds } from './sounds.js';
 import { synthesizeCoachSpeech, splitTtsChunks, streamCoachSpeech } from './tts.js';
 import { consumePcmStream, PcmStreamPlayer } from './pcm-player.js';
 import { APP_VERSION } from './version.js';
+import { coachCacheKeyFor, shouldCancelCoachRequest } from './coach-session.js';
 import { targetAnalysisReady, priorityPositionIndexes } from './analysis-readiness.js';
 
 const $ = id => document.getElementById(id);
@@ -52,6 +53,7 @@ const state = {
   coachReqId: 0,
   coachBusy: false,
   coachTargetKey: null,
+  coachTargetPly: null,
   coachSpeakId: 0,
   coachAudio: null,     // HTMLAudioElement for batch TTS fallback
   coachPcmPlayer: null, // owns the reusable AudioContext + scheduled PCM sources
@@ -524,6 +526,7 @@ function startReview(pgn, meta, opts = {}) {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  state.coachTargetPly = null;
   stopCoachSpeech();
   stopAutoplay();
   state.gameId = meta?.id || gameIdFromUrl(meta?.url) || null;
@@ -1347,6 +1350,7 @@ function startAutoplay() {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  state.coachTargetPly = null;
   state.coachReqId++;
   stopCoachSpeech();
   state.autoplay = true;
@@ -1637,7 +1641,7 @@ function prioritizeCurrentPly(ply = state.ply) {
 }
 
 function coachCacheKey() {
-  return state.analysisToken + ':' + state.ply + ':' + (meSide() || '-');
+  return coachCacheKeyFor({ ply: state.ply, seat: meSide() });
 }
 
 function syncCoachUi() {
@@ -1645,11 +1649,14 @@ function syncCoachUi() {
   const btn = $('btn-coach-analyze');
   const key = coachCacheKey();
 
-  // Scrub away mid-request -> cancel. Cache keeps finished replies.
-  if (state.coachBusy && state.coachTargetKey && state.coachTargetKey !== key) {
+  // Scrub away mid-request -> cancel. Only the ply counts: the note is about
+  // the move on screen, so anything else moving underneath it (a re-analysis,
+  // a seat becoming known) must not throw away a reply already being written.
+  if (shouldCancelCoachRequest({ busy: state.coachBusy, targetPly: state.coachTargetPly, ply: state.ply })) {
     if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
     state.coachBusy = false;
     state.coachTargetKey = null;
+    state.coachTargetPly = null;
     state.coachReqId++;
     stopCoachSpeech();
   }
@@ -1706,6 +1713,7 @@ async function runCoachAnalyze() {
   const reqId = ++state.coachReqId;
   state.coachBusy = true;
   state.coachTargetKey = cacheKey;
+  state.coachTargetPly = state.ply;
   $('btn-coach-analyze').disabled = true;
   setCoachGenerating();
 
@@ -1724,6 +1732,7 @@ async function runCoachAnalyze() {
   } catch (ex) {
     state.coachBusy = false;
     state.coachTargetKey = null;
+    state.coachTargetPly = null;
     setCoachPlaceholder(ex.message || 'Could not build coach prompt.', true);
     syncCoachUi();
     return;
@@ -1760,19 +1769,30 @@ async function runCoachAnalyze() {
     }
     if (!cleaned) cleaned = deterministicCoachFallback(facts);
     state.coachCache.set(cacheKey, cleaned);
+    // The key can drift under a request that is still about the same move, and
+    // syncCoachUi below reads the live key. Store both or the note we just
+    // rendered gets painted over with a placeholder.
+    const liveKey = coachCacheKey();
+    if (liveKey !== cacheKey) state.coachCache.set(liveKey, cleaned);
     // A superseded request still caches its note, but must not paint or speak
-    // over whatever the user moved on to.
-    if (reqId !== state.coachReqId) return;
+    // over whatever the user moved on to. Never do it quietly: an unexplained
+    // empty panel with the button live again is the hardest failure to report.
+    if (reqId !== state.coachReqId) {
+      console.warn('[coach] reply superseded before display', { wrote: cacheKey, now: liveKey });
+      return;
+    }
     setCoachText(cleaned);
     speakCoach(cleaned);
     state.coachBusy = false;
     state.coachTargetKey = null;
+    state.coachTargetPly = null;
     syncCoachUi();
   } catch (ex) {
     if (ex.name === 'AbortError') return;
     if (reqId !== state.coachReqId) return;
     state.coachBusy = false;
     state.coachTargetKey = null;
+    state.coachTargetPly = null;
     setCoachPlaceholder(ex.message || 'Coach request failed.', true);
     syncCoachUi();
   }
@@ -2069,6 +2089,7 @@ function stopAnalysis() {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  state.coachTargetPly = null;
   stopCoachSpeech();
 }
 
@@ -2083,6 +2104,7 @@ async function runAnalysis() {
   if (state.coachAbort) { state.coachAbort.abort(); state.coachAbort = null; }
   state.coachBusy = false;
   state.coachTargetKey = null;
+  state.coachTargetPly = null;
   stopCoachSpeech();
   state.running = false;
   const token = ++state.analysisToken;
@@ -2092,6 +2114,9 @@ async function runAnalysis() {
   state.evals = new Array(n + 1).fill(null);
   state.reports = new Array(n).fill(null);
   state.results = new Array(n + 1).fill(null);
+  // Coaching is written against engine output, so a fresh run invalidates it.
+  // This replaces the analysisToken that used to sit in the cache key.
+  state.coachCache.clear();
   state.tallyCursor = {};
   state.running = true;
   state.engineStartedAt = performance.now();
