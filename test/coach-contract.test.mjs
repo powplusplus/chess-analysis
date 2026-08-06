@@ -43,10 +43,19 @@ test('adversarial claims cannot reach rendering or speech gates', () => {
 });
 
 test('accepts and locally renders an exact referenced contract', () => {
-  const response = { items: [{ type: 'assessment', refs: ['played_move', 'engine_class'], move: 'Nf3', classification: 'Good' }] };
+  const item = { type: 'assessment', refs: ['played_move', 'engine_class'], move: 'Nf3', classification: 'Good' };
+  const note = 'Developing towards the centre is the right instinct here. Keep asking what the move does for your worst placed piece.';
+  const response = { items: [item], note };
   assert.equal(validateCoachResponse(response, facts).ok, true);
-  assert.equal(renderCoachResponse(response), 'Nf3 was classified as Good.');
+  assert.equal(renderCoachResponse(response), `Nf3 was classified as Good.\n\n${note}`);
   assert.equal(parseCoachResponse(JSON.stringify(response)).errors.length, 0);
+});
+
+test('a reply of bare templates is rejected, since the note is the coaching', () => {
+  const response = { items: [{ type: 'assessment', refs: ['played_move', 'engine_class'], move: 'Nf3', classification: 'Good' }] };
+  const result = validateCoachResponse(response, facts);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.includes('note is required'), JSON.stringify(result.errors));
 });
 
 test('a game overview can be built from supplied game-level facts', () => {

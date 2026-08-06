@@ -97,7 +97,12 @@ function groundingVocabulary(facts) {
  * or a figure the analysis did not supply. Wording stays free.
  */
 function validateNote(note, facts, errors) {
-  if (note === undefined) return;
+  // Required: the note is the coaching. A reply of bare templates restates the
+  // report panel and is not worth showing.
+  if (note === undefined) {
+    errors.push('note is required');
+    return;
+  }
   if (typeof note !== 'string' || !note.trim()) {
     errors.push('note must be a non-empty string when present');
     return;
@@ -231,7 +236,7 @@ RESPONSE CONTRACT (strict): Return JSON only, no markdown fence, shaped as {"ite
 
 "items" holds 1 to 5 fact restatements. Every item needs a non-empty refs array naming the supplied facts it uses, and its values must be copied verbatim from those facts. Allowed item shapes: ${shapes}. Do not add fields to items.
 
-"note" is your coaching in plain prose, 2 to 3 short paragraphs, ${MAX_NOTE_CHARS} characters max, following the voice rules above. Explain the idea, the plan, and what to take away. Do not merely restate the items. In the note you may name ONLY moves that appear in the facts and cite ONLY numbers that appear in the facts. Everything else must be qualitative. No dashes of any kind.
+"note" is required and is your coaching in plain prose, 2 to 3 short paragraphs, ${MAX_NOTE_CHARS} characters max, following the voice rules above. Explain the idea, the plan, and what to take away. Do not merely restate the items. In the note you may name ONLY moves that appear in the facts and cite ONLY numbers that appear in the facts. Everything else must be qualitative. No dashes of any kind.
 
 Facts (authoritative): ${JSON.stringify(facts)}.${retry}`;
 }

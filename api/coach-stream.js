@@ -5,9 +5,11 @@
 const MODEL = 'gemma-4-31b-it';
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 1_000_000;
-// LOW thinking is plenty for a grounded note and much faster than HIGH; HIGH is
-// the fallback if a build rejects LOW.
-const THINK_LEVELS = ['LOW', 'HIGH'];
+// Gemma 4 accepts only MINIMAL or HIGH; LOW is a 400. MINIMAL is also the only
+// setting that emits no thought tokens, and thought tokens are drawn from
+// maxOutputTokens, so HIGH can starve the reply of room. HIGH stays as the
+// fallback for a build that rejects MINIMAL.
+const THINK_LEVELS = ['MINIMAL', 'HIGH'];
 // A grounded note plus its JSON envelope needs more room than a bare template
 // list, and thinking tokens are drawn from the same budget. Still compact:
 // enough for 2 to 3 short paragraphs, not an essay.
