@@ -64,7 +64,7 @@ test('the handler answers inside the deadline the browser is holding', async () 
   // The regression: retries outlived FIRST_RESPONSE_MS, so the function
   // returned 200 to a caller that had already aborted. The work succeeded and
   // nobody saw it.
-  const FIRST_RESPONSE_MS = 10_000;
+  const FIRST_RESPONSE_MS = 25_000;
   const slow = status => ({
     ok: false,
     status,

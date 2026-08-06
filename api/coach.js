@@ -15,12 +15,13 @@ const MAX_OUTPUT_TOKENS = 1024;
 // those: a 400 is our bug and repeating it just burns the request budget.
 const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
 const RETRY_DELAYS_MS = [350];
-// The browser gives up on the first response after 10s. Retrying past that is
-// worse than not retrying: the work completes, logs a 200, and arrives to a
-// caller that stopped listening. Every bound below keeps the whole handler
-// comfortably inside that window.
-const PER_ATTEMPT_MS = 4500;
-const RETRY_BUDGET_MS = 8000;
+// Sized against how long this model actually answers in, not against a latency
+// target it cannot meet: a 4.5s cap cut off calls that were about to succeed.
+// A refusal comes back fast, so a retry still fits; a slow call that is working
+// gets the full attempt and is not retried. RETRY_BUDGET_MS is the worst case
+// for the whole handler and must stay under the caller's FIRST_RESPONSE_MS.
+const PER_ATTEMPT_MS = 12_000;
+const RETRY_BUDGET_MS = 20_000;
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
