@@ -35,7 +35,7 @@ function sanitizeImages(images) {
 }
 
 function isThinkingLevelError(msg) {
-  return /thinking[_ ]?level|invalid.*(MAX|LOW|HIGH)|unsupported.*thinking/i.test(msg || '');
+  return /thinking[_ ]?level|invalid.*(MINIMAL|MAX|LOW|HIGH)|unsupported.*thinking/i.test(msg || '');
 }
 
 export default async function handler(req, res) {
