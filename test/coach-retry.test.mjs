@@ -35,7 +35,7 @@ function harness(responses) {
 const req = { method: 'POST', body: { prompt: 'coach me' } };
 
 test('a brief upstream overload is retried instead of failing the click', async () => {
-  const h = harness([reply(503, {}), reply(503, {}), reply(200, OK_BODY)]);
+  const h = harness([reply(503, {}), reply(200, OK_BODY)]);
   try {
     await handler(req, h.res);
   } finally {
@@ -43,13 +43,13 @@ test('a brief upstream overload is retried instead of failing the click', async 
   }
   assert.equal(h.sent.status, 200, `expected recovery, got ${JSON.stringify(h.sent)}`);
   assert.equal(h.sent.body.text, '{"items":[]}');
-  assert.equal(h.levels.length, 3, 'should have retried twice before succeeding');
-  assert.deepEqual(h.levels, ['MINIMAL', 'MINIMAL', 'MINIMAL'], 'retries must not escalate thinking');
+  assert.equal(h.levels.length, 2, 'should have retried once before succeeding');
+  assert.deepEqual(h.levels, ['MINIMAL', 'MINIMAL'], 'retries must not escalate thinking');
 });
 
 test('sustained overload reports what to do, not Google wording', async () => {
   const h = harness([reply(503, { error: { message: 'The model is overloaded.' } }),
-    reply(503, {}), reply(503, {})]);
+    reply(503, {})]);
   try {
     await handler(req, h.res);
   } finally {
@@ -57,7 +57,50 @@ test('sustained overload reports what to do, not Google wording', async () => {
   }
   assert.equal(h.sent.status, 503);
   assert.match(h.sent.body.error, /busy.*Press Analyze again/i);
-  assert.equal(h.levels.length, 3, 'retries are capped');
+  assert.equal(h.levels.length, 2, 'retries are capped');
+});
+
+test('the handler answers inside the deadline the browser is holding', async () => {
+  // The regression: retries outlived FIRST_RESPONSE_MS, so the function
+  // returned 200 to a caller that had already aborted. The work succeeded and
+  // nobody saw it.
+  const FIRST_RESPONSE_MS = 10_000;
+  const slow = status => ({
+    ok: false,
+    status,
+    json: async () => { await new Promise(r => setTimeout(r, 120)); return {}; },
+  });
+  const h = harness([slow(503), slow(503), slow(503), slow(503)]);
+  const startedAt = Date.now();
+  try {
+    await handler(req, h.res);
+  } finally {
+    h.restore();
+  }
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < FIRST_RESPONSE_MS, `handler took ${elapsed}ms, past the caller's deadline`);
+  assert.ok(h.levels.length <= 2, `made ${h.levels.length} upstream calls; the budget should cap it`);
+});
+
+test('a hung upstream call is bounded, not left to eat the deadline', async () => {
+  const h = harness([]);
+  const original = globalThis.fetch;
+  let sawSignal = null;
+  globalThis.fetch = async (_url, init) => {
+    sawSignal = init.signal;
+    const err = new Error('The operation was aborted due to timeout');
+    err.name = 'TimeoutError';
+    throw err;
+  };
+  try {
+    await handler(req, h.res);
+  } finally {
+    globalThis.fetch = original;
+    h.restore();
+  }
+  assert.ok(sawSignal, 'each upstream call must carry an abort signal');
+  assert.equal(h.sent.status, 503);
+  assert.match(h.sent.body.error, /busy/i);
 });
 
 test('a 400 is our bug and is never retried', async () => {

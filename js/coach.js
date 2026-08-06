@@ -16,9 +16,11 @@ const MAX_OUTPUT_TOKENS = 1024;
 // Gemma is frequently overloaded for a second or two. Retry those, and only
 // those: a 400 is our bug and repeating it just burns the request budget.
 const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
-const RETRY_DELAYS_MS = [400, 900];
-// Leave room inside the caller's first-response deadline.
-const RETRY_BUDGET_MS = 7000;
+const RETRY_DELAYS_MS = [350];
+// The caller gives up on the first response after 10s, so a retry that would
+// land after that is worse than none: the work finishes for nobody.
+const PER_ATTEMPT_MS = 4500;
+const RETRY_BUDGET_MS = 8000;
 
 async function loadApiKey() {
   try {
@@ -297,8 +299,8 @@ async function callGemini(key, prompt, signal, images) {
         : msg);
       // Same brief-overload retry as the proxy, so local dev fails the same way.
       const delay = RETRY_DELAYS_MS[attempt];
-      if (TRANSIENT_STATUS.has(r.status) && delay != null
-        && Date.now() - startedAt + delay < RETRY_BUDGET_MS) {
+      const finishesBy = Date.now() - startedAt + delay + PER_ATTEMPT_MS;
+      if (TRANSIENT_STATUS.has(r.status) && delay != null && finishesBy <= RETRY_BUDGET_MS) {
         await sleep(delay, signal);
         continue;
       }
