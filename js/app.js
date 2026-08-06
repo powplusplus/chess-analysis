@@ -28,8 +28,8 @@ const $ = id => document.getElementById(id);
 const VERSION_STORE = 'mcr-version';
 const FILES = 'abcdefgh';
 const ANIM_MS = 160;
-const FIRST_RESPONSE_MS = 10_000;
-const COACH_TOTAL_MS = 30_000;
+const FIRST_RESPONSE_MS = 25_000;
+const COACH_TOTAL_MS = 55_000;
 const TTS_TOTAL_MS = 30_000;
 
 const state = {
