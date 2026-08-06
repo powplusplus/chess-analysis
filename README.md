@@ -59,6 +59,7 @@ sticks: chess, gamereview, chessanalysis, analysechess.
 | `js/icons.js` | the badge artwork (inline SVG) |
 | `js/app.js` | board, eval bar, timeline, move list, report panel, coach wiring |
 | `js/coach.js` | Coach Overview prompts + Gemma client (batch + streaming) |
+| `js/coach-contract.js` | the coach response contract: fact templates the model may cite verbatim, plus grounding checks on its free-text note |
 | `js/tts.js` | Gemini neural TTS client for the coach voice |
 | `api/coach.js` | Vercel proxy for Gemma (uses `GOOGLE_API_KEY`) |
 | `api/coach-stream.js` | streaming Gemma proxy — text arrives token-by-token so speech starts while the note is still being written |

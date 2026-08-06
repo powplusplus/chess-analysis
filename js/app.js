@@ -1760,9 +1760,11 @@ async function runCoachAnalyze() {
     }
     if (!cleaned) cleaned = deterministicCoachFallback(facts);
     state.coachCache.set(cacheKey, cleaned);
+    // A superseded request still caches its note, but must not paint or speak
+    // over whatever the user moved on to.
+    if (reqId !== state.coachReqId) return;
     setCoachText(cleaned);
     speakCoach(cleaned);
-    if (reqId !== state.coachReqId) return;
     state.coachBusy = false;
     state.coachTargetKey = null;
     syncCoachUi();
@@ -1802,8 +1804,23 @@ async function makeMoveBoardImages({ visualExplanation = false } = {}) {
 $('btn-coach-analyze').onclick = () => runCoachAnalyze();
 
 function makeCoachFacts() {
-  const facts = { opening: state.meta?.opening || null };
-  if (state.ply === 0) return facts;
+  const facts = { opening: state.meta?.opening || null, total_plies: state.moves.length };
+  if (state.ply === 0) {
+    // The overview has no played move, so without game-level facts there is
+    // nothing the contract could ground a note on.
+    const s = overviewStats();
+    return {
+      ...facts,
+      result: s.result,
+      your_accuracy: s.accYou,
+      opponent_accuracy: s.accOpp,
+      your_rating: s.ratingYou,
+      opponent_rating: s.ratingOpp,
+      tallies: s.tallies,
+      critical_moments: s.critical,
+      move_line: s.moveLine,
+    };
+  }
   const idx = state.ply - 1;
   const mv = state.moves[idx];
   const rep = state.reports[idx];
@@ -1827,31 +1844,53 @@ function makeCoachFacts() {
   };
 }
 
-function makeOverviewPrompt() {
+/** One source of truth for the game-level numbers the overview prompt and its facts share. */
+function overviewStats() {
   const accs = { w: [], b: [] };
   state.reports.forEach((r, i) => {
     if (!r) return;
     accs[state.moves[i].color].push(r.accuracy);
   });
   const aw = gameAccuracy(accs.w), ab = gameAccuracy(accs.b);
+  const side = meSide();
   const result = state.meta.headline
     || state.meta.result
     || (state.meta.meIsWhite == null ? 'see PGN' : state.meta.result);
+  const critical = criticalMoments(state.reports, state.moves, state.evals, 5, side);
+  const fmtAcc = a => (a == null ? null : a.toFixed(1));
+  return {
+    result: result || 'unknown',
+    accW: fmtAcc(aw),
+    accB: fmtAcc(ab),
+    ratingW: estimateRating(aw),
+    ratingB: estimateRating(ab),
+    accYou: side === 'b' ? fmtAcc(ab) : fmtAcc(aw),
+    accOpp: side === 'b' ? fmtAcc(aw) : fmtAcc(ab),
+    ratingYou: side === 'b' ? estimateRating(ab) : estimateRating(aw),
+    ratingOpp: side === 'b' ? estimateRating(aw) : estimateRating(ab),
+    tallies: summariseTallies(state.reports, state.moves, side),
+    critical: critical ? critical.split('\n') : [],
+    moveLine: moveLine(state.moves, state.reports),
+    side,
+  };
+}
 
+function makeOverviewPrompt() {
+  const s = overviewStats();
   return buildGameOverviewPrompt({
     white: state.meta.white.name,
     black: state.meta.black.name,
-    result: result || 'unknown',
+    result: s.result,
     opening: state.meta.opening,
     eco: state.meta.eco,
-    accW: aw == null ? null : aw.toFixed(1),
-    accB: ab == null ? null : ab.toFixed(1),
-    ratingW: estimateRating(aw),
-    ratingB: estimateRating(ab),
-    tallies: summariseTallies(state.reports, state.moves, meSide()),
-    critical: criticalMoments(state.reports, state.moves, state.evals, 5, meSide()),
-    moveLine: moveLine(state.moves, state.reports),
-    meSide: meSide(),
+    accW: s.accW,
+    accB: s.accB,
+    ratingW: s.ratingW,
+    ratingB: s.ratingB,
+    tallies: s.tallies,
+    critical: s.critical.join('\n'),
+    moveLine: s.moveLine,
+    meSide: s.side,
     isLive: state.live && !state.liveFinished,
   });
 }

@@ -8,6 +8,10 @@ const MAX_IMAGE_BYTES = 1_000_000;
 // LOW thinking is plenty for a grounded note and much faster than HIGH; HIGH is
 // the fallback if a build rejects LOW.
 const THINK_LEVELS = ['LOW', 'HIGH'];
+// A grounded note plus its JSON envelope needs more room than a bare template
+// list, and thinking tokens are drawn from the same budget. Still compact:
+// enough for 2 to 3 short paragraphs, not an essay.
+const MAX_OUTPUT_TOKENS = 1024;
 
 function endpoint(model) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent`;
@@ -75,7 +79,7 @@ export default async function handler(req, res) {
           contents: [{ role: 'user', parts }],
           generationConfig: {
             temperature: 0.25,
-            maxOutputTokens: 400,
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
             thinkingConfig: { thinkingLevel: level },
           },
         }),

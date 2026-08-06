@@ -4,9 +4,13 @@ const MODEL = 'gemma-4-31b-it';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 const MAX_IMAGES = 2;
 const MAX_IMAGE_BYTES = 1_000_000; // ~1MB raw base64 decode budget per image
-// LOW thinking is plenty for a grounded 2-4 paragraph note and much faster than
-// MAX; HIGH is the fallback if a build rejects LOW.
+// LOW thinking is plenty for a grounded note and much faster than HIGH;
+// HIGH is the fallback if a build rejects LOW.
 const THINK_LEVELS = ['LOW', 'HIGH'];
+// A grounded note plus its JSON envelope needs more room than a bare template
+// list, and thinking tokens are drawn from the same budget. Still compact:
+// enough for 2 to 3 short paragraphs, not an essay.
+const MAX_OUTPUT_TOKENS = 1024;
 
 async function loadApiKey() {
   try {
@@ -22,7 +26,7 @@ Voice rules (strict):
 - No em dashes or en dashes. Use commas, periods, or colons.
 - Never use "it's not X, it's Y" / "this isn't X, it's Y" / "not about X, about Y". Say the point once, straight.
 - Short paragraphs. Direct. No fluff. No emoji. No markdown headings.
-- 2 to 4 short paragraphs max.
+- 2 to 3 short paragraphs max.
 - The first sentence must state the principal evaluation and the main lesson. Do not open with scene-setting.
 - Sound like a real coach talking to the player, not a textbook.
 - Never only restate the move or its label (Best, Blunder, etc). Explain the idea, the plan, and what to do next.
@@ -208,7 +212,7 @@ function buildParts(prompt, images) {
 function genConfig(thinkingLevel) {
   return {
     temperature: 0.25,
-    maxOutputTokens: 400,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     thinkingConfig: { thinkingLevel },
   };
 }

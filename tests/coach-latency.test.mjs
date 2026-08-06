@@ -37,10 +37,18 @@ test('default coach path is text-grounded and has explicit deadlines', async () 
   assert.match(app, /firstAudibleScheduling/);
 });
 
-test('all coach generation endpoints use the compact output budget', async () => {
+test('all coach generation endpoints share one compact output budget', async () => {
+  // The budget has to cover thinking tokens, the JSON envelope and the note.
+  // It stays small enough to keep first-response latency inside the deadline.
+  const CEILING = 1536;
+  const budgets = new Set();
   for (const path of ['../js/coach.js', '../api/coach.js', '../api/coach-stream.js']) {
     const source = await readFile(new URL(path, import.meta.url), 'utf8');
-    assert.match(source, /maxOutputTokens:\s*400/);
-    assert.doesNotMatch(source, /maxOutputTokens:\s*8192/);
+    assert.match(source, /maxOutputTokens:\s*MAX_OUTPUT_TOKENS/);
+    const declared = source.match(/const MAX_OUTPUT_TOKENS = (\d+);/);
+    assert.ok(declared, `${path} must declare MAX_OUTPUT_TOKENS`);
+    budgets.add(Number(declared[1]));
   }
+  assert.equal(budgets.size, 1, `endpoints disagree on the budget: ${[...budgets]}`);
+  assert.ok([...budgets][0] <= CEILING, `budget ${[...budgets][0]} exceeds ${CEILING}`);
 });
